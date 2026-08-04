@@ -11,7 +11,9 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --import tsx --test server/term-hints.test.ts server/translation-pause.test.ts src/components/review-search-match.test.ts src/components/review-translation-controls.test.tsx",
+    "check": "npm run lint && npm test && npm run build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
