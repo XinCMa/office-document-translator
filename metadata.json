@@ -1,0 +1,6 @@
+{
+  "name": "Office Document Translator",
+  "description": "Translate PPTX, DOCX, and XLSX files locally while preserving document structure and formatting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
