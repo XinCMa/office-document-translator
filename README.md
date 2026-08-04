@@ -18,10 +18,10 @@ https://github.com/XinCMa/office-document-translator
 1. 检查 Node.js，必须为 22 或更高版本；缺少时先告诉我，不要擅自修改系统环境。
 2. 克隆仓库，使用 npm ci 安装锁定依赖。
 3. 如果 .env 不存在，从 .env.example 复制一份。
-4. 不要读取、打印或提交我的 API Key；请让我亲自在 .env 中填写 DEEPSEEK_API_KEY。
+4. 不要读取、打印或提交我的 API Key；请让我亲自在 .env 中填写 AI_API_KEY、AI_API_BASE 和 AI_MODEL。
 5. 运行 npm run check，一次完成类型检查、测试和生产构建。
 6. 使用 npm run dev 启动，确认 http://127.0.0.1:8080/ 返回 200，且
-   /api/system/config 的 hasDeepseekKey 为 true。
+   /api/system/config 的 hasApiKey 为 true。
 7. 默认保持 HOST=127.0.0.1，不要部署到公网，也不要删除或覆盖已有 data/ 数据。
 8. 如果 8080 端口被占用，先告诉我占用进程，不要直接结束它。
 9. 完成后只需告诉我本地地址、验证结果和停止服务的方法。
@@ -30,7 +30,9 @@ https://github.com/XinCMa/office-document-translator
 Agent 无法代替你安全地填写密钥；它准备好 `.env` 后，在文件中填入：
 
 ```dotenv
-DEEPSEEK_API_KEY=your_api_key_here
+AI_API_KEY=your_api_key_here
+AI_API_BASE=https://your-provider.example/v1
+AI_MODEL=your-model-id
 ```
 
 ## 自己安装：3 分钟启动
@@ -39,7 +41,7 @@ DEEPSEEK_API_KEY=your_api_key_here
 
 - macOS、Windows 或 Linux
 - Node.js 22+
-- DeepSeek API Key
+- 任一 OpenAI-compatible 模型服务的 API Key、Base URL 和模型名称
 
 ```bash
 git clone https://github.com/XinCMa/office-document-translator.git
@@ -55,7 +57,7 @@ Windows PowerShell 请将复制配置文件的命令替换为：
 Copy-Item .env.example .env
 ```
 
-编辑 `.env` 填入 `DEEPSEEK_API_KEY`，然后打开 [http://localhost:8080](http://localhost:8080)。终端显示以下内容即表示服务已启动：
+编辑 `.env` 填入模型服务配置，然后打开 [http://localhost:8080](http://localhost:8080)。终端显示以下内容即表示服务已启动：
 
 ```text
 Server fully operational on http://localhost:8080
@@ -69,13 +71,22 @@ Server fully operational on http://localhost:8080
 
 | 变量 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | 是 | 无 | 你自己的模型 API Key |
-| `DEEPSEEK_API_BASE` | 否 | `https://api.deepseek.com/v1` | OpenAI 兼容接口地址 |
-| `DEEPSEEK_MODEL` | 否 | `deepseek-chat` | 使用的模型名称 |
+| `AI_API_KEY` | 是 | 无 | 你自己的模型 API Key |
+| `AI_API_BASE` | 是¹ | `https://api.deepseek.com/v1` | OpenAI-compatible API 根地址 |
+| `AI_MODEL` | 是¹ | `deepseek-chat` | 服务商提供的模型 ID |
+| `AI_API_PROVIDER` | 否 | 自动识别 | 显示在页面上的服务商名称 |
 | `TRANSLATION_CONCURRENCY` | 否 | `6` | 同时处理的请求批次，限制为 1–12 |
 | `HOST` | 否 | `127.0.0.1` | 服务监听地址；本地使用请保持默认 |
 | `PORT` | 否 | `8080` | 本地端口 |
 | `DATA_DIR` | 否 | `./data` | 项目、术语库和翻译记忆目录 |
+
+¹ 默认值可以直接用于 DeepSeek；使用其他服务商时，必须同时替换 `AI_API_BASE` 和 `AI_MODEL`。旧版的 `DEEPSEEK_API_KEY`、`DEEPSEEK_API_BASE`、`DEEPSEEK_MODEL` 仍然兼容，但新配置优先。
+
+### 支持哪些 API
+
+本项目使用标准的 `POST {AI_API_BASE}/chat/completions`、Bearer Token 和 OpenAI Chat Completions 响应结构，因此可以连接提供 **OpenAI-compatible API** 的服务，例如 DeepSeek、OpenAI、通义千问兼容模式、OpenRouter，以及开启兼容接口的本地模型服务。
+
+“兼容”不表示所有服务商只换 Key 就能运行：每家服务的 Base URL 和模型 ID 不同，需按其控制台或文档填写。原生 Anthropic Messages API、Google Gemini 原生 API 等不同协议目前不能直接连接；需要使用其兼容网关或新增适配器。部分兼容服务不接受 `response_format`，程序遇到相关的 400/422 响应时会自动改用提示词 JSON 模式重试。
 
 提高并发不一定始终更快。若模型服务频繁返回 429，可将 `TRANSLATION_CONCURRENCY` 调低；程序重试时会优先遵循服务商返回的 `Retry-After`。
 
@@ -93,7 +104,7 @@ npm run check
 curl http://127.0.0.1:8080/api/system/config
 ```
 
-返回内容中的 `hasDeepseekKey` 应为 `true`。最后用一个不含敏感信息的小型 PPTX、DOCX 或 XLSX 完成：
+返回内容中的 `hasApiKey` 应为 `true`，并确认 `activeEngine` 和 `model` 符合配置。最后用一个不含敏感信息的小型 PPTX、DOCX 或 XLSX 完成：
 
 ```text
 导入 → 确认语言与术语 → 翻译 → 审校 → 生成并打开文件
@@ -148,7 +159,7 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN
 
 ### 页面提示没有配置 API Key
 
-确认文件名是 `.env` 而不是 `.env.txt`，填写 `DEEPSEEK_API_KEY` 后重启服务。
+确认文件名是 `.env` 而不是 `.env.txt`，填写 `AI_API_KEY`、`AI_API_BASE` 和 `AI_MODEL` 后重启服务。
 
 ### 大文件翻译很慢或出现 429
 

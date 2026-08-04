@@ -152,9 +152,10 @@ export default function App() {
     } | null>(null);
     const [systemConfig, setSystemConfig] = useState<{
         activeEngine: string;
-        hasDeepseekKey: boolean;
-        deepseekModel: string;
-        deepseekBaseUrl: string;
+        hasApiKey: boolean;
+        model: string;
+        baseUrl: string;
+        usesLegacyDeepseekConfig?: boolean;
     } | null>(null);
     const [pendingTargetLang, setPendingTargetLang] = useState('Simplified Chinese');
     const [isApplyingLanguageChange, setIsApplyingLanguageChange] = useState(false);
@@ -1298,8 +1299,8 @@ export default function App() {
             </div>
           <div className="ml-2">
               <span className="text-sm font-bold tracking-tight text-foreground">AI 文档本地化工作台</span>
-              {systemConfig?.hasDeepseekKey ? (<span className="text-[10px] font-sans font-bold px-2.5 py-0.5 rounded-full ml-3 border transition-all bg-blue-50 text-blue-700 border-blue-150">
-                  智能模型已就绪
+              {systemConfig?.hasApiKey ? (<span className="text-[10px] font-sans font-bold px-2.5 py-0.5 rounded-full ml-3 border transition-all bg-blue-50 text-blue-700 border-blue-150" title={`${systemConfig.activeEngine} · ${systemConfig.model}`}>
+                  {systemConfig.activeEngine} 已就绪
                 </span>) : systemConfig ? (<span className="text-[10px] font-sans font-bold px-2.5 py-0.5 rounded-full ml-3 border border-amber-200 bg-amber-50 text-amber-700">
                   请在 .env 配置 API Key
                 </span>) : (<span className="text-[10px] text-muted-foreground font-mono bg-muted border border-border px-1.5 py-0.5 rounded-md ml-3 animate-pulse">
