@@ -5,6 +5,36 @@ interface DeepSeekMessage {
   content: string;
 }
 
+const DEFAULT_TRANSLATION_CONCURRENCY = 6;
+const MIN_TRANSLATION_CONCURRENCY = 1;
+const MAX_TRANSLATION_CONCURRENCY = 12;
+
+export function getTranslationConcurrency(value = process.env.TRANSLATION_CONCURRENCY): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_TRANSLATION_CONCURRENCY;
+  return Math.min(MAX_TRANSLATION_CONCURRENCY, Math.max(MIN_TRANSLATION_CONCURRENCY, parsed));
+}
+
+class DeepSeekApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterMs?: number
+  ) {
+    super(message);
+    this.name = 'DeepSeekApiError';
+  }
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return undefined;
+  return Math.max(0, retryAt - Date.now());
+}
+
 function cleanJsonResponse(str: string): string {
   let cleaned = str.trim();
   if (cleaned.startsWith("```")) {
@@ -53,7 +83,11 @@ async function callDeepSeek(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`DeepSeek API request failed with status ${response.status}: ${errorText}`);
+    throw new DeepSeekApiError(
+      `DeepSeek API request failed with status ${response.status}: ${errorText}`,
+      response.status,
+      parseRetryAfterMs(response.headers.get('retry-after'))
+    );
   }
 
   const data = await response.json();
@@ -273,7 +307,11 @@ async function withExponentialRetry<T>(
     } catch (err) {
       lastError = err;
       if (attempt >= maxAttempts) break;
-      const delay = Math.min(8000, 800 * Math.pow(2, attempt - 1));
+      const exponentialDelay = Math.min(8000, 800 * Math.pow(2, attempt - 1));
+      const retryAfterDelay = err instanceof DeepSeekApiError && err.status === 429
+        ? Math.min(60000, err.retryAfterMs ?? 0)
+        : 0;
+      const delay = Math.max(exponentialDelay, retryAfterDelay);
       console.warn(`${label} failed on attempt ${attempt}/${maxAttempts}. Retrying in ${delay}ms...`, err);
       await sleep(delay);
     }
@@ -455,7 +493,7 @@ No other text outside this raw JSON structure.`
 
   const batchOuts = await runWithConcurrency(
     batches.length,
-    3,
+    getTranslationConcurrency(),
     index => translateBatch(batches[index], index),
     shouldPause
   );
@@ -666,7 +704,11 @@ No other text outside this raw JSON structure.`
     return { bIndex, batchResults };
   }, `DeepSeek batch ${bIndex + 1}`, 3);
 
-  const batchOuts = await runWithConcurrency(batches.length, 3, index => translateBatch(batches[index], index));
+  const batchOuts = await runWithConcurrency(
+    batches.length,
+    getTranslationConcurrency(),
+    index => translateBatch(batches[index], index)
+  );
 
   // Combine and map results back matching original inputs exactly
   for (let bIndex = 0; bIndex < batches.length; bIndex++) {

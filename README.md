@@ -33,6 +33,9 @@ DEEPSEEK_API_KEY=your_api_key_here
 
 `.env` 已被 Git 忽略，不要提交真实密钥。
 
+翻译默认同时处理 6 个请求批次。可根据模型服务套餐和电脑环境调整 `.env` 中的
+`TRANSLATION_CONCURRENCY`，有效范围为 1–12；遇到 API 429 限流时，重试会优先遵循服务商返回的 `Retry-After`。
+
 ## 构建运行
 
 ```bash

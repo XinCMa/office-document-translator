@@ -1,4 +1,19 @@
-import { runWithConcurrency } from './translator.js';
+import { getTranslationConcurrency, runWithConcurrency } from './translator.js';
+
+const concurrencyCases: Array<[string | undefined, number]> = [
+  [undefined, 6],
+  ['8', 8],
+  ['0', 1],
+  ['99', 12],
+  ['invalid', 6]
+];
+
+for (const [value, expected] of concurrencyCases) {
+  const actual = getTranslationConcurrency(value);
+  if (actual !== expected) {
+    throw new Error(`Unexpected concurrency for ${String(value)}: expected ${expected}, got ${actual}`);
+  }
+}
 
 let pauseRequested = false;
 const started: number[] = [];
