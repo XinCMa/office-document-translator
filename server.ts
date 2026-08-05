@@ -10,7 +10,7 @@ import { extractPPTXText, writePPTXTranslations, PPTXStats } from './server/pptx
 import { extractDOCXText, writeDOCXTranslations, collectDOCXParagraphTextsFromXml, isDocxTextPart, hasDOCXFixedLayoutFlyerRisk, DOCXStats } from './server/docx.js';
 import { extractPDFText, writePDFTranslations, PDFStats } from './server/pdf.js';
 import { extractXLSXText, writeXLSXTranslations, collectXLSXCellTextsFromXml, XLSXStats } from './server/xlsx.js';
-import { translateStrings, translateSegments, runPreDetection, resolveGlossaryConflicts, type TranslationContextMap, type TranslationSegmentRequest } from './server/translator.js';
+import { getModelApiConfig, translateStrings, translateSegments, runPreDetection, resolveGlossaryConflicts, type TranslationContextMap, type TranslationSegmentRequest } from './server/translator.js';
 import { buildGlossaryImportPreview, linkGlobalGlossaryToProject, mergeGlossaryTerms, mergeProjectGlossaryTerms, parseGlossaryFile, validateGlossaryUsage, buildSegmentTermHints, validateSegmentTermHints, orientGlossaryForLanguagePair, type GlossaryConflictDecisionMap } from './server/glossary.js';
 import type { ProjectGlossaryReviewCandidate } from './server/glossary.js';
 import { createServer as createViteServer } from 'vite';
@@ -2767,11 +2767,13 @@ async function startServer() {
     // API: Get Current Engine Deployment Config
     app.get('/api/system/config', (req, res) => {
         try {
+            const modelConfig = getModelApiConfig();
             res.json({
-                activeEngine: 'DeepSeek',
-                hasDeepseekKey: !!process.env.DEEPSEEK_API_KEY,
-                deepseekModel: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-                deepseekBaseUrl: process.env.DEEPSEEK_API_BASE || 'https://api.deepseek.com/v1'
+                activeEngine: modelConfig.providerName,
+                hasApiKey: Boolean(modelConfig.apiKey),
+                model: modelConfig.model,
+                baseUrl: modelConfig.baseUrl,
+                usesLegacyDeepseekConfig: modelConfig.usesLegacyDeepseekConfig
             });
         }
         catch (err: any) {

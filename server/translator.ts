@@ -1,8 +1,43 @@
 import { GlossaryTerm, SegmentTermHint, TranslationDomain } from "./db.js";
 
-interface DeepSeekMessage {
+interface ModelMessage {
   role: 'system' | 'user';
   content: string;
+}
+
+export interface ModelApiConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  providerName: string;
+  usesLegacyDeepseekConfig: boolean;
+}
+
+function inferProviderName(baseUrl: string): string {
+  const normalized = baseUrl.toLowerCase();
+  if (normalized.includes('api.deepseek.com')) return 'DeepSeek';
+  if (normalized.includes('api.openai.com')) return 'OpenAI';
+  if (normalized.includes('dashscope.aliyuncs.com')) return 'Qwen';
+  if (normalized.includes('openrouter.ai')) return 'OpenRouter';
+  if (normalized.includes('localhost') || normalized.includes('127.0.0.1')) return 'Local model';
+  return 'OpenAI-compatible API';
+}
+
+export function getModelApiConfig(env: NodeJS.ProcessEnv = process.env): ModelApiConfig {
+  const usesLegacyDeepseekConfig = !env.AI_API_KEY && Boolean(env.DEEPSEEK_API_KEY);
+  const apiKey = env.AI_API_KEY || env.DEEPSEEK_API_KEY || '';
+  const baseUrl = env.AI_API_BASE || env.DEEPSEEK_API_BASE || 'https://api.deepseek.com/v1';
+  const model = env.AI_MODEL || env.DEEPSEEK_MODEL || 'deepseek-chat';
+  const providerName = env.AI_API_PROVIDER || inferProviderName(baseUrl);
+  return { apiKey, baseUrl, model, providerName, usesLegacyDeepseekConfig };
+}
+
+function requireModelApiConfig(): ModelApiConfig {
+  const config = getModelApiConfig();
+  if (!config.apiKey) {
+    throw new Error('未配置 AI_API_KEY。请复制 .env.example 为 .env，并填写兼容接口的 API Key。');
+  }
+  return config;
 }
 
 const DEFAULT_TRANSLATION_CONCURRENCY = 6;
@@ -15,14 +50,14 @@ export function getTranslationConcurrency(value = process.env.TRANSLATION_CONCUR
   return Math.min(MAX_TRANSLATION_CONCURRENCY, Math.max(MIN_TRANSLATION_CONCURRENCY, parsed));
 }
 
-class DeepSeekApiError extends Error {
+class ModelApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly retryAfterMs?: number
   ) {
     super(message);
-    this.name = 'DeepSeekApiError';
+    this.name = 'ModelApiError';
   }
 }
 
@@ -44,18 +79,12 @@ function cleanJsonResponse(str: string): string {
   return cleaned.trim();
 }
 
-async function callDeepSeek(
-  messages: DeepSeekMessage[],
+async function callModelApi(
+  messages: ModelMessage[],
   responseFormatJson: boolean = false,
   options: { maxTokens?: number } = {}
 ): Promise<string> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    throw new Error("未配置 DEEPSEEK_API_KEY。请复制 .env.example 为 .env，并填写你的 API Key。");
-  }
-
-  const baseUrl = process.env.DEEPSEEK_API_BASE || "https://api.deepseek.com/v1";
-  const model = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+  const { apiKey, baseUrl, model, providerName } = requireModelApiConfig();
   const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
   const payload: any = {
@@ -72,19 +101,28 @@ async function callDeepSeek(
     payload.response_format = { type: "json_object" };
   }
 
-  const response = await fetch(url, {
-    method: "POST",
+  const request = (requestPayload: Record<string, unknown>) => fetch(url, {
+    method: 'POST',
     headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(requestPayload),
   });
+
+  let response = await request(payload);
+  if (!response.ok && responseFormatJson && (response.status === 400 || response.status === 422)) {
+    const firstError = await response.text();
+    console.warn(`${providerName} rejected response_format; retrying with prompt-only JSON mode.`, firstError);
+    const fallbackPayload = { ...payload };
+    delete fallbackPayload.response_format;
+    response = await request(fallbackPayload);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new DeepSeekApiError(
-      `DeepSeek API request failed with status ${response.status}: ${errorText}`,
+    throw new ModelApiError(
+      `${providerName} request failed with status ${response.status}: ${errorText}`,
       response.status,
       parseRetryAfterMs(response.headers.get('retry-after'))
     );
@@ -93,7 +131,7 @@ async function callDeepSeek(
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content;
   if (!content) {
-    throw new Error("Invalid or empty response structure from DeepSeek API");
+    throw new Error(`Invalid or empty response structure from ${providerName}`);
   }
 
   return content;
@@ -308,7 +346,7 @@ async function withExponentialRetry<T>(
       lastError = err;
       if (attempt >= maxAttempts) break;
       const exponentialDelay = Math.min(8000, 800 * Math.pow(2, attempt - 1));
-      const retryAfterDelay = err instanceof DeepSeekApiError && err.status === 429
+      const retryAfterDelay = err instanceof ModelApiError && err.status === 429
         ? Math.min(60000, err.retryAfterMs ?? 0)
         : 0;
       const delay = Math.max(exponentialDelay, retryAfterDelay);
@@ -333,10 +371,7 @@ export async function translateSegments(
 ): Promise<Record<string, string>> {
   if (segments.length === 0) return {};
 
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    throw new Error("未配置 DEEPSEEK_API_KEY。请复制 .env.example 为 .env，并填写你的 API Key。");
-  }
+  const { providerName } = requireModelApiConfig();
 
   const results: Record<string, string> = {};
   const normalizedDomain = normalizeTranslationDomain(translationDomain);
@@ -350,7 +385,7 @@ export async function translateSegments(
   // existing callers. Translation constraints now come from segment.termHints.
   void glossary;
 
-  console.log(`Segment translation starting. Engine: DeepSeek exclusively. Total segments: ${segments.length}. Batches: ${batches.length}. Topic context: ${topic || "None"}. Incremental Flag: ${isIncremental}`);
+  console.log(`Segment translation starting. Engine: ${providerName}. Total segments: ${segments.length}. Batches: ${batches.length}. Topic context: ${topic || "None"}. Incremental Flag: ${isIncremental}`);
 
   const translateBatch = async (batch: TranslationSegmentRequest[], bIndex: number) => withExponentialRetry(async () => {
     if (shouldPause?.()) return { bIndex, batchResults: {} };
@@ -382,7 +417,7 @@ export async function translateSegments(
     const idToSegment = new Map(batchPayload.map(item => [item.requestItemId, batch.find(segment => segment.segmentId === item.segmentId)!]));
     const segmentById = new Map(batch.map(segment => [segment.segmentId, segment]));
 
-    const prompts: DeepSeekMessage[] = [
+    const prompts: ModelMessage[] = [
       {
         role: "system",
         content: `You are a business document localization assistant. Translate each occurrence-level segment from ${sourceLang} to ${targetLang}.
@@ -429,7 +464,7 @@ No other text outside this raw JSON structure.`
       }
     ];
 
-    const contentResponse = await callDeepSeek(prompts, true);
+    const contentResponse = await callModelApi(prompts, true);
     const parsedObject = JSON.parse(cleanJsonResponse(contentResponse));
     const finalItems = parseTranslationItems(parsedObject);
 
@@ -446,12 +481,12 @@ No other text outside this raw JSON structure.`
     const missingSegments = batch.filter(segment => !batchResults[segment.segmentId] || batchResults[segment.segmentId].trim() === "");
 
     if (missingSegments.length > 0 && !shouldPause?.()) {
-      console.warn(`DeepSeek segment batch ${bIndex + 1} omitted ${missingSegments.length} segment(s). Retrying individually...`);
+      console.warn(`Model API segment batch ${bIndex + 1} omitted ${missingSegments.length} segment(s). Retrying individually...`);
       for (let i = 0; i < missingSegments.length; i++) {
         if (shouldPause?.()) break;
         const segment = missingSegments[i];
         const retryId = `retry_${bIndex + 1}_${i + 1}`;
-        const retryMessages: DeepSeekMessage[] = [
+        const retryMessages: ModelMessage[] = [
           prompts[0],
           {
             role: "user",
@@ -468,7 +503,7 @@ No other text outside this raw JSON structure.`
           }
         ];
         const retryTranslation = await withExponentialRetry(async () => {
-          const retryResponse = await callDeepSeek(retryMessages, true);
+          const retryResponse = await callModelApi(retryMessages, true);
           const retryParsed = JSON.parse(cleanJsonResponse(retryResponse));
           const retryItems = parseTranslationItems(retryParsed);
           const retryItem = retryItems.find(item => item && String(item.segmentId || "") === segment.segmentId)
@@ -476,10 +511,10 @@ No other text outside this raw JSON structure.`
             || retryItems[0];
           const translated = retryItem?.translation ? String(retryItem.translation).trim() : "";
           if (!translated) {
-            throw new Error(`DeepSeek segment batch ${bIndex + 1} did not return a translation for segment: ${segment.segmentId}`);
+            throw new Error(`Model API segment batch ${bIndex + 1} did not return a translation for segment: ${segment.segmentId}`);
           }
           return translated;
-        }, `DeepSeek segment individual retry ${retryId}`, 3);
+        }, `Model API segment individual retry ${retryId}`, 3);
         batchResults[segment.segmentId] = retryTranslation;
       }
     }
@@ -489,7 +524,7 @@ No other text outside this raw JSON structure.`
     }
 
     return { bIndex, batchResults };
-  }, `DeepSeek segment batch ${bIndex + 1}`, 3);
+  }, `Model API segment batch ${bIndex + 1}`, 3);
 
   const batchOuts = await runWithConcurrency(
     batches.length,
@@ -529,10 +564,7 @@ export async function translateStrings(
 ): Promise<Record<string, string>> {
   if (strings.length === 0) return {};
 
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    throw new Error("未配置 DEEPSEEK_API_KEY。请复制 .env.example 为 .env，并填写你的 API Key。");
-  }
+  const { providerName } = requireModelApiConfig();
 
   const results: Record<string, string> = {};
   const normalizedDomain = normalizeTranslationDomain(translationDomain);
@@ -574,7 +606,7 @@ export async function translateStrings(
     ? candidateGlossary.map(formatGlossaryTerm).join('\n')
     : "No contextual glossary candidates provided.";
 
-  console.log(`Translate system starting. Engine: DeepSeek exclusively. Total items: ${strings.length}. Batches: ${batches.length}. Topic context: ${topic || "None"}. Incremental Flag: ${isIncremental}`);
+  console.log(`Translate system starting. Engine: ${providerName}. Total items: ${strings.length}. Batches: ${batches.length}. Topic context: ${topic || "None"}. Incremental Flag: ${isIncremental}`);
 
   // Run batches in parallel, but fail loudly if any batch cannot be translated.
   // Returning the original text as a silent fallback makes downstream QA look greener
@@ -595,7 +627,7 @@ export async function translateStrings(
     });
     const idToSource = new Map(batchPayload.map(item => [item.id, item.text]));
 
-    const prompts: DeepSeekMessage[] = [
+    const prompts: ModelMessage[] = [
       {
         role: "system",
         content: `You are a business presentation slide localization Assistant. Translate the input list of unique text fields from ${sourceLang} to ${targetLang}.
@@ -643,7 +675,7 @@ No other text outside this raw JSON structure.`
       }
     ];
 
-    const contentResponse = await callDeepSeek(prompts, true);
+    const contentResponse = await callModelApi(prompts, true);
     const parsedObject = JSON.parse(cleanJsonResponse(contentResponse));
     const finalItems = parseTranslationItems(parsedObject);
 
@@ -667,11 +699,11 @@ No other text outside this raw JSON structure.`
     }
 
     if (missingSources.length > 0) {
-      console.warn(`DeepSeek batch ${bIndex + 1} omitted ${missingSources.length} items. Retrying individually...`);
+      console.warn(`Model API batch ${bIndex + 1} omitted ${missingSources.length} items. Retrying individually...`);
       for (let i = 0; i < missingSources.length; i++) {
         const source = missingSources[i];
         const retryId = `retry_${bIndex + 1}_${i + 1}`;
-        const retryMessages: DeepSeekMessage[] = [
+        const retryMessages: ModelMessage[] = [
           prompts[0],
           {
             role: "user",
@@ -683,16 +715,16 @@ No other text outside this raw JSON structure.`
           }
         ];
         const retryTranslation = await withExponentialRetry(async () => {
-          const retryResponse = await callDeepSeek(retryMessages, true);
+          const retryResponse = await callModelApi(retryMessages, true);
           const retryParsed = JSON.parse(cleanJsonResponse(retryResponse));
           const retryItems = parseTranslationItems(retryParsed);
           const retryItem = retryItems.find(item => item && String(item.id) === retryId) || retryItems[0];
           const translated = retryItem?.translation ? String(retryItem.translation).trim() : "";
           if (!translated) {
-            throw new Error(`DeepSeek batch ${bIndex + 1} did not return a translation for: ${source}`);
+            throw new Error(`Model API batch ${bIndex + 1} did not return a translation for: ${source}`);
           }
           return translated;
-        }, `DeepSeek individual retry ${retryId}`, 3);
+        }, `Model API individual retry ${retryId}`, 3);
         batchResults[source] = retryTranslation;
         }
       }
@@ -702,7 +734,7 @@ No other text outside this raw JSON structure.`
       }
 
     return { bIndex, batchResults };
-  }, `DeepSeek batch ${bIndex + 1}`, 3);
+  }, `Model API batch ${bIndex + 1}`, 3);
 
   const batchOuts = await runWithConcurrency(
     batches.length,
@@ -759,7 +791,7 @@ export async function resolveGlossaryConflicts(
 ): Promise<GlossaryConflictDecision[]> {
   if (reviewCandidates.length === 0) return [];
 
-  const messages: DeepSeekMessage[] = [
+  const messages: ModelMessage[] = [
     {
       role: "system",
       content: `You are a terminology disambiguation assistant for enterprise presentation translation.
@@ -799,7 +831,7 @@ Use confidence >= 0.85 only when the context clearly supports one target. If con
   ];
 
   try {
-    const content = await callDeepSeek(messages, true, { maxTokens: 10000 });
+    const content = await callModelApi(messages, true, { maxTokens: 10000 });
     const parsed = JSON.parse(cleanJsonResponse(content));
     return Array.isArray(parsed.decisions) ? parsed.decisions.map((decision: any) => ({
       source: String(decision.source || ""),
@@ -808,7 +840,7 @@ Use confidence >= 0.85 only when the context clearly supports one target. If con
       reason: String(decision.reason || "")
     })).filter((decision: GlossaryConflictDecision) => decision.source && decision.selectedTarget) : [];
   } catch (err) {
-    console.error("DeepSeek glossary conflict resolution failed:", err);
+    console.error("Model API glossary conflict resolution failed:", err);
     return [];
   }
 }
@@ -819,10 +851,7 @@ export async function runPreDetection(
   targetLang: string = "Simplified Chinese",
   translationDomain: TranslationDomain = 'business'
 ): Promise<PreDetectResult> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    throw new Error("未配置 DEEPSEEK_API_KEY。请复制 .env.example 为 .env，并填写你的 API Key。");
-  }
+  const { providerName } = requireModelApiConfig();
 
   // Clean up empty strings or ultra-short ones. Pre-detection runs during upload,
   // so keep the sample compact and representative rather than exhaustive.
@@ -842,9 +871,9 @@ export async function runPreDetection(
   const domain = domainLabel(normalizedDomain);
   const termLanguage = targetTermLanguage(targetLang);
 
-  console.log(`Pre-detection analysis starting. Engine: DeepSeek exclusively. Direction: ${direction}. Domain: ${normalizedDomain}.`);
+  console.log(`Pre-detection analysis starting. Engine: ${providerName}. Direction: ${direction}. Domain: ${normalizedDomain}.`);
 
-  const messages: DeepSeekMessage[] = [
+  const messages: ModelMessage[] = [
     {
       role: "system",
       content: `# Role
@@ -902,7 +931,7 @@ Output a single, valid, raw JSON object. No markdown code blocks (\`\`\`json), n
   ];
 
   try {
-    const content = await callDeepSeek(messages, true, { maxTokens: 10000 });
+    const content = await callModelApi(messages, true, { maxTokens: 10000 });
     const parsed = JSON.parse(cleanJsonResponse(content));
     return {
       topic_keywords: Array.isArray(parsed.topic_keywords)
@@ -912,7 +941,7 @@ Output a single, valid, raw JSON object. No markdown code blocks (\`\`\`json), n
       recommendedGlossary: parsed.recommendedGlossary || []
     };
   } catch (err) {
-    console.error("DeepSeek Pre-detection failed:", err);
+    console.error("Model API pre-detection failed:", err);
   }
 
 // Safe fallback if the engine completely fails. Do not seed fake terminology.
