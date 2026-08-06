@@ -10,7 +10,6 @@ export interface ModelApiConfig {
   baseUrl: string;
   model: string;
   providerName: string;
-  usesLegacyDeepseekConfig: boolean;
 }
 
 function inferProviderName(baseUrl: string): string {
@@ -24,12 +23,11 @@ function inferProviderName(baseUrl: string): string {
 }
 
 export function getModelApiConfig(env: NodeJS.ProcessEnv = process.env): ModelApiConfig {
-  const usesLegacyDeepseekConfig = !env.AI_API_KEY && Boolean(env.DEEPSEEK_API_KEY);
-  const apiKey = env.AI_API_KEY || env.DEEPSEEK_API_KEY || '';
-  const baseUrl = env.AI_API_BASE || env.DEEPSEEK_API_BASE || 'https://api.deepseek.com/v1';
-  const model = env.AI_MODEL || env.DEEPSEEK_MODEL || 'deepseek-chat';
+  const apiKey = env.AI_API_KEY || '';
+  const baseUrl = env.AI_API_BASE || 'https://api.deepseek.com/v1';
+  const model = env.AI_MODEL || 'deepseek-chat';
   const providerName = env.AI_API_PROVIDER || inferProviderName(baseUrl);
-  return { apiKey, baseUrl, model, providerName, usesLegacyDeepseekConfig };
+  return { apiKey, baseUrl, model, providerName };
 }
 
 function requireModelApiConfig(): ModelApiConfig {

@@ -155,7 +155,6 @@ export default function App() {
         hasApiKey: boolean;
         model: string;
         baseUrl: string;
-        usesLegacyDeepseekConfig?: boolean;
     } | null>(null);
     const [pendingTargetLang, setPendingTargetLang] = useState('Simplified Chinese');
     const [isApplyingLanguageChange, setIsApplyingLanguageChange] = useState(false);
