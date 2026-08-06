@@ -2772,8 +2772,7 @@ async function startServer() {
                 activeEngine: modelConfig.providerName,
                 hasApiKey: Boolean(modelConfig.apiKey),
                 model: modelConfig.model,
-                baseUrl: modelConfig.baseUrl,
-                usesLegacyDeepseekConfig: modelConfig.usesLegacyDeepseekConfig
+                baseUrl: modelConfig.baseUrl
             });
         }
         catch (err: any) {

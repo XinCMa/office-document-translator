@@ -80,7 +80,7 @@ Server fully operational on http://localhost:8080
 | `PORT` | 否 | `8080` | 本地端口 |
 | `DATA_DIR` | 否 | `./data` | 项目、术语库和翻译记忆目录 |
 
-¹ 默认值可以直接用于 DeepSeek；使用其他服务商时，必须同时替换 `AI_API_BASE` 和 `AI_MODEL`。旧版的 `DEEPSEEK_API_KEY`、`DEEPSEEK_API_BASE`、`DEEPSEEK_MODEL` 仍然兼容，但新配置优先。
+¹ 默认值可以直接用于 DeepSeek；使用其他服务商时，必须同时替换 `AI_API_BASE` 和 `AI_MODEL`。
 
 ### 支持哪些 API
 

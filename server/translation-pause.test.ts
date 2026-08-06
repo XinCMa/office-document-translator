@@ -4,29 +4,14 @@ const genericConfig = getModelApiConfig({
   AI_API_KEY: 'generic-key',
   AI_API_BASE: 'https://example.com/v1',
   AI_MODEL: 'example-model',
-  AI_API_PROVIDER: 'Example Provider',
-  DEEPSEEK_API_KEY: 'legacy-key'
+  AI_API_PROVIDER: 'Example Provider'
 });
 
 if (genericConfig.apiKey !== 'generic-key'
   || genericConfig.baseUrl !== 'https://example.com/v1'
   || genericConfig.model !== 'example-model'
-  || genericConfig.providerName !== 'Example Provider'
-  || genericConfig.usesLegacyDeepseekConfig) {
+  || genericConfig.providerName !== 'Example Provider') {
   throw new Error(`Generic model configuration was not preferred: ${JSON.stringify(genericConfig)}`);
-}
-
-const legacyConfig = getModelApiConfig({
-  DEEPSEEK_API_KEY: 'legacy-key',
-  DEEPSEEK_API_BASE: 'https://legacy.example/v1',
-  DEEPSEEK_MODEL: 'legacy-model'
-});
-
-if (legacyConfig.apiKey !== 'legacy-key'
-  || legacyConfig.baseUrl !== 'https://legacy.example/v1'
-  || legacyConfig.model !== 'legacy-model'
-  || !legacyConfig.usesLegacyDeepseekConfig) {
-  throw new Error(`Legacy DeepSeek configuration was not preserved: ${JSON.stringify(legacyConfig)}`);
 }
 
 const concurrencyCases: Array<[string | undefined, number]> = [
