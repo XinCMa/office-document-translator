@@ -1385,7 +1385,7 @@ async function startServer() {
             const pIdx = p_idx_safe(p.p_idx, idx);
             const partType = p.partType || 'slide';
             const partPath = p.partPath || p.slidePath;
-            const partKey = partType === 'diagram' || partType === 'document'
+            const partKey = partType === 'diagram' || partType === 'document' || partType === 'chart'
                 ? `d${Buffer.from(partPath || '').toString('base64url').slice(0, 10)}`
                 : 's';
             const id = `${p.slideNum}_${partKey}_${pIdx}`;
@@ -2303,7 +2303,7 @@ async function startServer() {
                     if (item.translatedText) {
                         translationsByText[item.originalText] = item.translatedText;
                     }
-                    if (item.partPath && item.partType === 'diagram') {
+                    if (item.partPath && (item.partType === 'diagram' || item.partType === 'chart')) {
                         if (!translationsByPart[item.partPath]) {
                             translationsByPart[item.partPath] = {};
                         }
