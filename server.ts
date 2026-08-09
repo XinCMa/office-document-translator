@@ -8,15 +8,32 @@ import JSZip from 'jszip';
 import { db, Project, ExtractedTextItem, GlossaryTerm, GlossaryLibrary, QAStatus, SourceContainer, TranslationSegment, SegmentTermHint } from './server/db.js';
 import { extractPPTXText, writePPTXTranslations, PPTXStats } from './server/pptx.js';
 import { extractDOCXText, writeDOCXTranslations, collectDOCXParagraphTextsFromXml, isDocxTextPart, hasDOCXFixedLayoutFlyerRisk, DOCXStats } from './server/docx.js';
-import { extractPDFText, writePDFTranslations, PDFStats } from './server/pdf.js';
-import { extractXLSXText, writeXLSXTranslations, collectXLSXCellTextsFromXml, XLSXStats } from './server/xlsx.js';
-import { getModelApiConfig, translateStrings, translateSegments, runPreDetection, resolveGlossaryConflicts, type TranslationContextMap, type TranslationSegmentRequest } from './server/translator.js';
+import { extractXLSXText, writeXLSXTranslations, collectXLSXCellTextsFromXml, collectXLSXSharedStrings, XLSXStats } from './server/xlsx.js';
+import { getModelApiConfig, translateSegments, runPreDetection, resolveGlossaryConflicts, ModelApiError, type TranslationContextMap, type TranslationSegmentRequest } from './server/translator.js';
 import { buildGlossaryImportPreview, linkGlobalGlossaryToProject, mergeGlossaryTerms, mergeProjectGlossaryTerms, parseGlossaryFile, validateGlossaryUsage, buildSegmentTermHints, validateSegmentTermHints, orientGlossaryForLanguagePair, type GlossaryConflictDecisionMap } from './server/glossary.js';
 import type { ProjectGlossaryReviewCandidate } from './server/glossary.js';
 import { createServer as createViteServer } from 'vite';
 import { detectSourceLanguageFromTexts, getLanguageEvidence, hasLikelyResidualLanguage, normalizeLanguage, type SupportedLanguage } from './server/language-detection.js';
 import { resolveUploadedFileName, sanitizeOriginalFileName } from './server/file-name.js';
-const upload = multer({ dest: 'uploads/', defParamCharset: 'utf8' });
+const configuredMaxUploadSizeMb = Number(process.env.MAX_UPLOAD_SIZE_MB);
+const MAX_UPLOAD_SIZE_MB = Number.isFinite(configuredMaxUploadSizeMb) && configuredMaxUploadSizeMb > 0
+    ? configuredMaxUploadSizeMb
+    : null;
+const upload = multer({ dest: 'uploads/', defParamCharset: 'utf8',
+    ...(MAX_UPLOAD_SIZE_MB ? { limits: { fileSize: MAX_UPLOAD_SIZE_MB * 1024 * 1024 } } : {}) });
+// Central 500 responder: log the full error server-side, but only surface
+// messages that are actionable for the user (model API failures). Everything
+// else is replaced with a generic message so internal details like filesystem
+// paths never reach the client.
+function sendServerError(res: express.Response, err: unknown): void {
+    console.error('[api] request failed:', err);
+    if (err instanceof ModelApiError) {
+        const status = err.status >= 400 && err.status <= 599 ? err.status : 500;
+        res.status(status).json({ error: err.message });
+        return;
+    }
+    res.status(500).json({ error: 'Internal server error. Check the server console for details.' });
+}
 async function startServer() {
     const PROJECT_GLOSSARY_LANGUAGE_VERSION = 3;
     const app = express();
@@ -599,9 +616,6 @@ async function startServer() {
             const text = normalizeContextText(item.originalText);
             if (item.partType === 'diagram')
                 return 'smartart_label';
-            if (project.documentType === 'pdf') {
-                return text.length <= 80 ? 'pdf_text_label' : 'pdf_paragraph';
-            }
             if (project.documentType === 'xlsx') {
                 return text.length <= 80 ? 'spreadsheet_cell_label' : 'spreadsheet_cell_text';
             }
@@ -630,8 +644,6 @@ async function startServer() {
             if (project.documentType === 'pptx') {
                 return item.partType === 'diagram' ? `Slide ${item.slideNum} SmartArt` : `Slide ${item.slideNum}`;
             }
-            if (project.documentType === 'pdf')
-                return `PDF page ${item.slideNum || 1}`;
             if (project.documentType === 'xlsx')
                 return `Excel sheet ${item.slideNum || 1}`;
             if (item.partType === 'diagram')
@@ -654,8 +666,6 @@ async function startServer() {
                 const slideTitle = slideTitleBySlide.get(item.slideNum);
                 return slideTitle && slideTitle !== normalizeContextText(item.originalText) ? slideTitle : undefined;
             }
-            if (project.documentType === 'pdf')
-                return undefined;
             if (project.documentType === 'xlsx')
                 return undefined;
             const partKey = item.partPath || item.slidePath || `slide:${item.slideNum}`;
@@ -671,7 +681,7 @@ async function startServer() {
         };
         const nearbyTextsForItem = (item: ExtractedTextItem): string[] => {
             const source = normalizeContextText(item.originalText);
-            const group = project.documentType === 'pptx' || project.documentType === 'pdf' || project.documentType === 'xlsx'
+            const group = project.documentType === 'pptx' || project.documentType === 'xlsx'
                 ? (itemsBySlide.get(item.slideNum) || [])
                 : (itemsByPart.get(item.partPath || item.slidePath || `slide:${item.slideNum}`) || []);
             const currentIndex = group.findIndex(candidate => candidate.id === item.id);
@@ -721,7 +731,7 @@ async function startServer() {
         const itemsBySlide = new Map<number, ExtractedTextItem[]>();
         const itemsByPart = new Map<string, ExtractedTextItem[]>();
         const normalizeContextText = (value: string | undefined): string => String(value || '').replace(/\s+/g, ' ').trim();
-        const isSentenceLike = (text: string): boolean => /[.!?銆傦紒锛燂紱;]$/.test(text.trim());
+        const isSentenceLike = (text: string): boolean => /[.!?\u3002\uff01\uff1f\uff1b;]$/.test(text.trim());
         const isLikelyHeading = (text: string): boolean => {
             const clean = normalizeContextText(text);
             if (clean.length < 3 || clean.length > 120)
@@ -751,7 +761,7 @@ async function startServer() {
             }
         }
         const groupForItem = (item: ExtractedTextItem): ExtractedTextItem[] => {
-            return project.documentType === 'pptx' || project.documentType === 'pdf' || project.documentType === 'xlsx'
+            return project.documentType === 'pptx' || project.documentType === 'xlsx'
                 ? (itemsBySlide.get(item.slideNum) || [])
                 : (itemsByPart.get(item.partPath || item.slidePath || `slide:${item.slideNum}`) || []);
         };
@@ -760,8 +770,6 @@ async function startServer() {
             const text = normalizeContextText(item.originalText);
             if (item.partType === 'diagram')
                 return 'smartart_label';
-            if (project.documentType === 'pdf')
-                return text.length <= 80 ? 'pdf_text_label' : 'pdf_paragraph';
             if (project.documentType === 'xlsx')
                 return text.length <= 80 ? 'spreadsheet_cell_label' : 'spreadsheet_cell_text';
             if (project.documentType === 'docx') {
@@ -788,8 +796,6 @@ async function startServer() {
             const partPath = String(item.partPath || item.slidePath || '');
             if (project.documentType === 'pptx')
                 return item.partType === 'diagram' ? `Slide ${item.slideNum} SmartArt` : `Slide ${item.slideNum}`;
-            if (project.documentType === 'pdf')
-                return `PDF page ${item.slideNum || 1}`;
             if (project.documentType === 'xlsx')
                 return `Excel sheet ${item.slideNum || 1}`;
             if (item.partType === 'diagram')
@@ -812,7 +818,7 @@ async function startServer() {
                 const slideTitle = slideTitleBySlide.get(item.slideNum);
                 return slideTitle && slideTitle !== normalizeContextText(item.originalText) ? slideTitle : undefined;
             }
-            if (project.documentType === 'pdf' || project.documentType === 'xlsx')
+            if (project.documentType === 'xlsx')
                 return undefined;
             const partItems = itemsByPart.get(item.partPath || item.slidePath || `slide:${item.slideNum}`) || [];
             const currentIndex = partItems.findIndex(candidate => candidate.id === item.id);
@@ -1095,7 +1101,7 @@ async function startServer() {
             res.json(summaries);
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Get single project details (including texts)
@@ -1112,14 +1118,14 @@ async function startServer() {
             res.json(recoverProjectBackgroundJobs(project));
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Upload Office file
     app.post('/api/projects/upload', upload.single('file'), async (req, res) => {
         const uploadStartMs = Date.now();
         const clientId = getClientId(req);
-        let uploadDocumentType: 'pptx' | 'docx' | 'pdf' | 'xlsx' | undefined;
+        let uploadDocumentType: 'pptx' | 'docx' | 'xlsx' | undefined;
         let uploadFileSizeBytes = 0;
         try {
             if (!req.file) {
@@ -1133,7 +1139,7 @@ async function startServer() {
                 cacheKey: originalCacheKey
             });
             uploadFileSizeBytes = req.file.size;
-            uploadDocumentType = getDocumentTypeFromName(originalName);
+            uploadDocumentType = getDocumentTypeFromName(originalName) || undefined;
             if (!uploadDocumentType) {
                 fs.unlinkSync(filePath);
                 return res.status(400).json({ error: 'Unsupported file type. Please upload a .pptx, .docx, or .xlsx file.' });
@@ -1246,7 +1252,7 @@ async function startServer() {
         }
         catch (err: any) {
             console.error(err);
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Initialize Demo presentation project
@@ -1267,8 +1273,8 @@ async function startServer() {
             const recommendedGlossary = [
                 { source: 'Artificial Intelligence', target: '\u4eba\u5de5\u667a\u80fd', category: 'Industry Domain', explanation: 'Core AI terminology', checked: true },
                 { source: 'Deep Learning', target: '\u6df1\u5ea6\u5b66\u4e60', category: 'Industry Domain', explanation: 'Machine learning method based on neural networks', checked: true },
-                { source: 'Model Orchestration', target: '妯″瀷缂栨帓', category: 'Industry Domain', explanation: 'Coordinating multiple AI models or model calls in a workflow', checked: true },
-                { source: 'Large Language Model', target: '澶ц瑷€妯″瀷', category: 'Industry Domain', explanation: 'LLM = Large Language Model', checked: true }
+                { source: 'Model Orchestration', target: '模型编排', category: 'Industry Domain', explanation: 'Coordinating multiple AI models or model calls in a workflow', checked: true },
+                { source: 'Large Language Model', target: '大语言模型', category: 'Industry Domain', explanation: 'LLM = Large Language Model', checked: true }
             ];
             const project: Project = {
                 id: projectId,
@@ -1329,7 +1335,7 @@ async function startServer() {
             });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // Safe Index creator
@@ -1339,8 +1345,8 @@ async function startServer() {
     function sourceHash(text: string): string {
         return crypto.createHash('sha1').update(text || '', 'utf8').digest('hex');
     }
-    type OfficeDocumentType = 'pptx' | 'docx' | 'pdf' | 'xlsx';
-    type OfficeStats = PPTXStats | DOCXStats | PDFStats | XLSXStats;
+    type OfficeDocumentType = 'pptx' | 'docx' | 'xlsx';
+    type OfficeStats = PPTXStats | DOCXStats | XLSXStats;
     function getDocumentTypeFromName(fileName: string): OfficeDocumentType | null {
         const ext = path.extname(fileName || '').toLowerCase();
         if (ext === '.docx')
@@ -1368,14 +1374,12 @@ async function startServer() {
     function getTranslatedDownloadName(project: Project, documentType: OfficeDocumentType): string {
         const originalName = project.originalName;
         const baseName = path.basename(originalName, path.extname(originalName));
-        const extension = documentType === 'docx' ? 'docx' : (documentType === 'pdf' ? 'pdf' : (documentType === 'xlsx' ? 'xlsx' : 'pptx'));
+        const extension = documentType === 'docx' ? 'docx' : (documentType === 'xlsx' ? 'xlsx' : 'pptx');
         return `${baseName}.${getOutputLanguageSuffix(project)}.${extension}`;
     }
     async function extractOfficeText(buffer: Buffer, documentType: OfficeDocumentType): Promise<OfficeStats> {
         if (documentType === 'docx')
             return extractDOCXText(buffer);
-        if (documentType === 'pdf')
-            return extractPDFText(buffer);
         if (documentType === 'xlsx')
             return extractXLSXText(buffer);
         return extractPPTXText(buffer);
@@ -1427,7 +1431,7 @@ async function startServer() {
             res.json(project);
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // Select multiple reusable glossary libraries for a project. The selected
@@ -1442,7 +1446,7 @@ async function startServer() {
             if (project.clientId && project.clientId !== clientId) {
                 return res.status(403).json({ error: 'Forbidden: You do not own this project.' });
             }
-            const requestedIds = Array.isArray(req.body?.libraryIds)
+            const requestedIds: string[] = Array.isArray(req.body?.libraryIds)
                 ? req.body.libraryIds.map((id: unknown) => String(id)).filter(Boolean)
                 : [];
             const libraries = db.getGlossaryLibraries(clientId);
@@ -1474,7 +1478,7 @@ async function startServer() {
                 })) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // Save project-scoped conflict decisions. These decisions affect only this
@@ -1518,7 +1522,7 @@ async function startServer() {
             res.json({ success: true, glossaryConflictDecisions: nextDecisions, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/glossary/import-preview', upload.single('file'), async (req, res) => {
@@ -1542,7 +1546,7 @@ async function startServer() {
         catch (err: any) {
             if (req.file?.path && fs.existsSync(req.file.path))
                 fs.unlinkSync(req.file.path);
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/glossary/import-apply', (req, res) => {
@@ -1567,7 +1571,7 @@ async function startServer() {
             res.json({ success: true, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/glossary/validate', (req, res) => {
@@ -1594,7 +1598,7 @@ async function startServer() {
             res.json({ success: true, report, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/rescan-text', async (req, res) => {
@@ -1660,7 +1664,7 @@ async function startServer() {
             res.json({ success: true, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.patch('/api/projects/:id/language', async (req, res) => {
@@ -1708,7 +1712,7 @@ async function startServer() {
             res.json(project);
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/translation/pause', (req, res) => {
@@ -1751,7 +1755,7 @@ async function startServer() {
             return res.status(409).json({ error: 'This project is not currently translating.' });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Request translation
@@ -1941,7 +1945,7 @@ async function startServer() {
                 failedProject.errorMsg = err.message;
                 db.saveProject(failedProject);
             }
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // Precise word boundary mapping helper for glossary matching
@@ -2141,7 +2145,7 @@ async function startServer() {
                 finalizeTranslationStatus(failedProject);
                 db.saveProject(failedProject);
             }
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Update translations manually
@@ -2199,7 +2203,7 @@ async function startServer() {
             res.json({ success: true, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Build / Generate PPTX
@@ -2249,13 +2253,7 @@ async function startServer() {
                 message: '正在将译文写入文档结构...'
             };
             db.saveProject(project);
-            if (documentType === 'pdf') {
-                outputBuffer = await writePDFTranslations(project.originalName, project.textItems.map(item => ({
-                    originalText: item.originalText,
-                    translatedText: item.translatedText
-                })), project.targetLang);
-            }
-            else if (documentType === 'xlsx') {
+            if (documentType === 'xlsx') {
                 const translationsByPart: Record<string, Record<number, string>> = {};
                 for (const item of project.textItems) {
                     const partPath = item.partPath || item.slidePath;
@@ -2285,7 +2283,7 @@ async function startServer() {
                     }
                     translationsByPart[partPath][p_idx] = item.translatedText || item.originalText;
                 }
-                outputBuffer = await writeDOCXTranslations(buffer, translationsByPart);
+                outputBuffer = await writeDOCXTranslations(buffer, translationsByPart, project.targetLang);
             }
             else {
                 // Reconstruct translation payload grouped by slide number and paragraph index
@@ -2323,7 +2321,7 @@ async function startServer() {
             };
             db.saveProject(project);
             const baseName = path.basename(project.originalName, path.extname(project.originalName));
-            const outputExtension = documentType === 'docx' ? 'docx' : (documentType === 'pdf' ? 'pdf' : (documentType === 'xlsx' ? 'xlsx' : 'pptx'));
+            const outputExtension = documentType === 'docx' ? 'docx' : (documentType === 'xlsx' ? 'xlsx' : 'pptx');
             const outputSuffix = getOutputLanguageSuffix(project);
             const outFileName = `${baseName}_${outputSuffix}.${outputExtension}`;
             const outPath = path.join(process.cwd(), 'uploads', `${project.id}_${outputSuffix}_${Date.now()}.${outputExtension}`);
@@ -2347,36 +2345,28 @@ async function startServer() {
             }
             let checkZip: JSZip | null = null;
             try {
-                if (documentType === 'pdf') {
-                    zipIntegrity = outputBuffer.subarray(0, 5).toString('latin1') === '%PDF-';
+                checkZip = await JSZip.loadAsync(outputBuffer);
+                zipIntegrity = true;
+                if (documentType === 'docx' || documentType === 'xlsx') {
                     outputSlideCount = project.slideCount;
-                    outputMediaCount = 0;
-                    details.push('Generated a translated text PDF. Original PDF visual layout is not rewritten in this compatibility mode.');
                 }
                 else {
-                    checkZip = await JSZip.loadAsync(outputBuffer);
-                    zipIntegrity = true;
-                    if (documentType === 'docx' || documentType === 'xlsx') {
-                        outputSlideCount = project.slideCount;
-                    }
-                    else {
-                        const slideReg = /^ppt\/slides\/slide\d+\.xml$/;
-                        outputSlideCount = Object.keys(checkZip.files).filter(name => slideReg.test(name)).length;
-                    }
-                    const mediaPrefix = documentType === 'docx' ? 'word/media/' : (documentType === 'xlsx' ? 'xl/media/' : 'ppt/media/');
-                    const mediaFiles = Object.keys(checkZip.files).filter(name => name.startsWith(mediaPrefix));
-                    outputMediaCount = mediaFiles.length;
-                    for (const file of mediaFiles) {
-                        const content = await checkZip.files[file].async('nodebuffer');
-                        if (content.length === 0) {
-                            emptyMediaCount++;
-                            details.push(`Empty media asset found: ${file}`);
-                        }
+                    const slideReg = /^ppt\/slides\/slide\d+\.xml$/;
+                    outputSlideCount = Object.keys(checkZip.files).filter(name => slideReg.test(name)).length;
+                }
+                const mediaPrefix = documentType === 'docx' ? 'word/media/' : (documentType === 'xlsx' ? 'xl/media/' : 'ppt/media/');
+                const mediaFiles = Object.keys(checkZip.files).filter(name => name.startsWith(mediaPrefix));
+                outputMediaCount = mediaFiles.length;
+                for (const file of mediaFiles) {
+                    const content = await checkZip.files[file].async('nodebuffer');
+                    if (content.length === 0) {
+                        emptyMediaCount++;
+                        details.push(`Empty media asset found: ${file}`);
                     }
                 }
             }
             catch (err) {
-                details.push(`${documentType === 'pdf' ? 'PDF' : 'ZIP package'} integrity failure: ${(err as Error).message}`);
+                details.push(`ZIP package integrity failure: ${(err as Error).message}`);
             }
             // Check text mappings
             let unmappedCount = 0;
@@ -2414,7 +2404,7 @@ async function startServer() {
                     }
                 }
             }
-            if (checkZip && documentType !== 'pdf') {
+            if (checkZip) {
                 const decodeXmlText = (text: string): string => text
                     .replace(/&lt;/g, '<')
                     .replace(/&gt;/g, '>')
@@ -2423,9 +2413,9 @@ async function startServer() {
                     .replace(/&quot;/g, '"');
                 const collectParagraphTexts = (xml: string): string[] => {
                     const out: string[] = [];
-                    xml.replace(/<a:p\b[^>]*>([\s\S]*?)<\/a:p>/g, (pMatch, pInner) => {
+                    xml.replace(/<a:p\b[^>]*>([\s\S]*?)<\/a:p>/g, (pMatch: string, pInner: string) => {
                         const textParts: string[] = [];
-                        pInner.replace(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g, (tMatch, tContent) => {
+                        pInner.replace(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g, (tMatch: string, tContent: string) => {
                             textParts.push(decodeXmlText(String(tContent)));
                             return tMatch;
                         });
@@ -2437,6 +2427,11 @@ async function startServer() {
                     return out;
                 };
                 const reportedResiduals = new Set<string>();
+                // XLSX cells of type "s" only store an index into xl/sharedStrings.xml,
+                // so resolve that table once or the residual scan would see empty cells.
+                const xlsxSharedStrings = documentType === 'xlsx'
+                    ? collectXLSXSharedStrings(await checkZip.file('xl/sharedStrings.xml')?.async('string') || '')
+                    : [];
                 const xmlParts = Object.keys(checkZip.files).filter(name => documentType === 'docx'
                     ? isDocxTextPart(name)
                     : documentType === 'xlsx'
@@ -2450,7 +2445,7 @@ async function startServer() {
                     const paragraphTexts = documentType === 'docx'
                         ? collectDOCXParagraphTextsFromXml(xml)
                         : documentType === 'xlsx'
-                            ? collectXLSXCellTextsFromXml(xml)
+                            ? collectXLSXCellTextsFromXml(xml, xlsxSharedStrings)
                             : collectParagraphTexts(xml);
                     for (const text of paragraphTexts) {
                         const residualThreshold = isProjectTargetEnglish(project) ? 6 : 18;
@@ -2503,7 +2498,7 @@ async function startServer() {
                 failedProject.errorMsg = err.message;
                 db.saveProject(failedProject);
             }
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Download finished translated package
@@ -2525,7 +2520,7 @@ async function startServer() {
             res.download(project.translatedFilePath, downloadName);
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Delete project
@@ -2543,7 +2538,7 @@ async function startServer() {
             res.json({ success: true });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Glossary Management
@@ -2553,7 +2548,7 @@ async function startServer() {
             res.json(getPersonalGlossary(clientId));
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.get('/api/glossary/libraries', (req, res) => {
@@ -2562,7 +2557,7 @@ async function startServer() {
             res.json({ libraries: db.getGlossaryLibraries(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/glossary/libraries', (req, res) => {
@@ -2575,7 +2570,7 @@ async function startServer() {
                 ? normalizePersonalGlossary(req.body.terms)
                 : [];
             const library = db.createGlossaryLibrary({
-                clientId,
+                clientId: clientId || '',
                 name,
                 description: req.body?.description,
                 scope: ['general', 'domain', 'client', 'product', 'project'].includes(req.body?.scope) ? req.body.scope : 'general',
@@ -2587,7 +2582,7 @@ async function startServer() {
             res.status(201).json({ success: true, library });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.patch('/api/glossary/libraries/:id', (req, res) => {
@@ -2610,7 +2605,7 @@ async function startServer() {
             res.json({ success: true, library: saved });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.delete('/api/glossary/libraries/:id', (req, res) => {
@@ -2622,7 +2617,7 @@ async function startServer() {
             res.json({ success: true, libraries: db.getGlossaryLibraries(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/glossary', (req, res) => {
@@ -2648,7 +2643,7 @@ async function startServer() {
             res.json({ success: true, glossary: getPersonalGlossary(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/glossary/import-preview', upload.single('file'), async (req, res) => {
@@ -2664,7 +2659,7 @@ async function startServer() {
         catch (err: any) {
             if (req.file?.path && fs.existsSync(req.file.path))
                 fs.unlinkSync(req.file.path);
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/glossary/import-apply', (req, res) => {
@@ -2679,7 +2674,7 @@ async function startServer() {
             res.json({ success: true, glossary: getPersonalGlossary(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.patch('/api/glossary/:source', (req, res) => {
@@ -2719,7 +2714,7 @@ async function startServer() {
             res.json({ success: true, glossary: getPersonalGlossary(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.delete('/api/glossary/:source', (req, res) => {
@@ -2730,7 +2725,7 @@ async function startServer() {
             res.json({ success: true, glossary: getPersonalGlossary(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Translation Memory management
@@ -2740,7 +2735,7 @@ async function startServer() {
             res.json(db.getTranslationMemory(clientId));
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/tm/clear', (req, res) => {
@@ -2750,7 +2745,7 @@ async function startServer() {
             res.json({ success: true });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: One-click Full System Reset (per current user)
@@ -2761,7 +2756,7 @@ async function startServer() {
             res.json({ success: true, message: 'Your projects, glossary, and translation memory were reset.' });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Get Current Engine Deployment Config
@@ -2776,8 +2771,19 @@ async function startServer() {
             });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
+    });
+    // Reject oversized/failed uploads with a clean JSON error instead of letting
+    // Express fall through to its default (HTML) error handling.
+    app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({ error: 'File exceeds the configured local upload size limit.' });
+            }
+            return res.status(400).json({ error: 'Upload failed. Please try again.' });
+        }
+        next(err);
     });
     // Vite Server Middleware Routing Setup
     if (process.env.NODE_ENV !== 'production') {

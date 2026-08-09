@@ -2,8 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, FileText, Languages, ChevronRight, Play, CheckCircle2, AlertCircle, Sparkles, Plus, Trash2, PlusCircle, Check, Loader2, ArrowUp, ArrowDown, ChevronLeft, ChevronDown, Globe2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GlossaryImportPreview, GlossaryLibrary, GlossaryTerm, ProjectSummary, TranslationDirection, TranslationDomain } from '../types';
-import JSZip from 'jszip';
 import { apiFetch } from '../lib/api';
+import { GLOSSARY_CATEGORY_KEYS, GLOSSARY_CATEGORY_LABELS, DEFAULT_GLOSSARY_CATEGORY, normalizeGlossaryCategory, type GlossaryCategoryKey } from '../lib/glossary';
+import { displayLanguageLabel } from '../lib/language';
 interface RecommendedTerm {
     source: string;
     target: string;
@@ -21,41 +22,23 @@ interface RecommendedTerm {
     direction?: TranslationDirection | 'bidirectional';
 }
 type UploadTranslationDirection = TranslationDirection | 'auto';
-const GLOSSARY_CATEGORIES = [
-    "\u4ea7\u54c1\u4e0e\u54c1\u724c\u540d",
-    "\u4ee3\u7801\u4e0e\u4e13\u4e1a\u7f29\u5199",
-    "\u884c\u4e1a\u5782\u76f4\u672f\u8bed",
-    "\u4f01\u4e1a\u5185\u90e8/\u81ea\u5b9a\u4e49",
-    "\u5176\u5b83"
-];
-const DEFAULT_CATEGORY = GLOSSARY_CATEGORIES[0];
+const GLOSSARY_CATEGORIES: string[] = [...GLOSSARY_CATEGORY_KEYS];
+const DEFAULT_CATEGORY = DEFAULT_GLOSSARY_CATEGORY;
 function cleanCategory(desc: string | undefined): string {
-    if (!desc)
-        return "\u5176\u5b83";
-    const d = desc.trim();
-    for (const cat of GLOSSARY_CATEGORIES) {
-        if (d.includes(cat) || cat.includes(d))
-            return cat;
-    }
-    const lower = d.toLowerCase();
-    if (lower.includes("brand") || lower.includes("product") || lower.includes("system") || lower.includes("\u54c1\u724c") || lower.includes("\u4ea7\u54c1"))
-        return GLOSSARY_CATEGORIES[0];
-    if (lower.includes("acronym") || lower.includes("code") || lower.includes("abbreviation") || lower.includes("\u7f29\u5199") || lower.includes("\u4ee3\u7801"))
-        return GLOSSARY_CATEGORIES[1];
-    if (lower.includes("industry") || lower.includes("domain") || lower.includes("term") || lower.includes("\u5782\u76f4") || lower.includes("\u4e13\u4e1a") || lower.includes("\u884c\u4e1a") || lower.includes("\u672f\u8bed"))
-        return GLOSSARY_CATEGORIES[2];
-    if (lower.includes("company") || lower.includes("internal") || lower.includes("custom") || lower.includes("\u5185\u90e8") || lower.includes("\u81ea\u5b9a\u4e49"))
-        return GLOSSARY_CATEGORIES[3];
-    if (lower.includes("other") || lower.includes("\u5176\u5b83") || lower.includes("\u5176\u4ed6"))
-        return GLOSSARY_CATEGORIES[4];
-    return GLOSSARY_CATEGORIES[4];
+    return normalizeGlossaryCategory(desc);
 }
 function getTermCategory(term: RecommendedTerm): string {
     return cleanCategory(term.category || term.description);
 }
 function getTermExplanation(term: RecommendedTerm): string {
     const fallback = term.description || '';
-    return term.explanation || (fallback && cleanCategory(fallback) !== fallback ? fallback : '');
+    if (!fallback)
+        return term.explanation || '';
+    // A description that merely repeats the category (in any known spelling)
+    // must not be shown a second time as the term explanation.
+    const canonical = normalizeGlossaryCategory(fallback);
+    const isCategoryDesc = fallback === canonical || fallback === GLOSSARY_CATEGORY_LABELS[canonical as GlossaryCategoryKey];
+    return term.explanation || (isCategoryDesc ? '' : fallback);
 }
 function compareGlossaryText(a = '', b = ''): number {
     return a.trim().localeCompare(b.trim(), undefined, { sensitivity: 'base', numeric: true });
@@ -105,22 +88,6 @@ function inferProjectDirection(project: ProjectSummary | null, fallback: Transla
     if (source.includes('english') || target.includes('chinese'))
         return 'en-zh';
     return fallback;
-}
-function displayLanguageLabel(language?: string): string {
-    const normalized = String(language || '').toLowerCase();
-    if (normalized.includes('simplified chinese'))
-        return '简体中文';
-    if (normalized.includes('english'))
-        return '英语';
-    if (normalized.includes('french'))
-        return '法语';
-    if (normalized.includes('japanese'))
-        return '日语';
-    if (normalized.includes('italian'))
-        return '意大利语';
-    if (normalized.includes('arabic'))
-        return '阿拉伯语';
-    return language || '自动检测';
 }
 function getGlossaryLanguageLabels(sourceLang: string, targetLang: string) {
     return {
@@ -208,8 +175,7 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
     // Custom manual entry fields
     const [newSource, setNewSource] = useState('');
     const [newTarget, setNewTarget] = useState('');
-    const [newDesc, setNewDesc] = useState(DEFAULT_CATEGORY);
-    const [showAddForm, setShowAddForm] = useState(false);
+    const [newDesc, setNewDesc] = useState<string>(DEFAULT_CATEGORY);
     const [deleteConfirm, setDeleteConfirm] = useState<{
         index: number;
         word: string;
@@ -219,8 +185,6 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
     const [isImportingGlossary, setIsImportingGlossary] = useState(false);
     const [glossaryImportError, setGlossaryImportError] = useState<string | null>(null);
     const glossaryInputRef = useRef<HTMLInputElement>(null);
-    const [categoryFilter, setCategoryFilter] = useState('all');
-    const [statusFilter, setStatusFilter] = useState('all');
     const [editingProjectExplanationIndex, setEditingProjectExplanationIndex] = useState<number | null>(null);
     const [editingProjectExplanation, setEditingProjectExplanation] = useState('');
     const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([]);
@@ -255,38 +219,8 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
     const selectedProjectCount = recommendedTerms.filter(term => term.checked !== false).length;
     const personalMatchCount = recommendedTerms.filter(isPersonalGlossaryMatch).length;
     const aiRecommendationCount = recommendedTerms.filter(isAiTerm).length;
-    const reviewNeededCount = recommendedTerms.filter(isNeedsReviewTerm).length;
-    const categoryFilterOptions = [
-        { value: 'all', label: '全部领域', count: recommendedTerms.length },
-        ...GLOSSARY_CATEGORIES.map(category => ({
-            value: category,
-            label: category,
-            count: recommendedTerms.filter(term => getTermCategory(term) === category).length
-        }))
-    ];
-    const statusFilterOptions = [
-        { value: 'all', label: '全部来源', count: recommendedTerms.length },
-        { value: 'personal', label: '个人术语命中', count: personalMatchCount },
-        { value: 'ai', label: 'AI 推荐', count: aiRecommendationCount },
-        { value: 'review', label: '需复核', count: reviewNeededCount },
-        { value: 'manual_imported', label: '手动/导入', count: recommendedTerms.filter(isManualOrImportedTerm).length }
-    ];
     const filteredRecommendedTerms = recommendedTerms
         .map((term, index) => ({ term, index }))
-        .filter(({ term }) => categoryFilter === 'all' || getTermCategory(term) === categoryFilter)
-        .filter(({ term }) => {
-        if (statusFilter === 'all')
-            return true;
-        if (statusFilter === 'personal')
-            return isPersonalGlossaryMatch(term);
-        if (statusFilter === 'ai')
-            return isAiTerm(term);
-        if (statusFilter === 'review')
-            return isNeedsReviewTerm(term);
-        if (statusFilter === 'manual_imported')
-            return isManualOrImportedTerm(term);
-        return true;
-    })
         .sort(compareRecommendedTermRows);
     // Show one floating scroll control only after the user has moved a little.
     useEffect(() => {
@@ -539,13 +473,6 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
             setIsImportingGlossary(false);
         }
     };
-    // Toggle specific term's checkbox
-    const handleToggleTerm = (index: number) => {
-        const updated = [...recommendedTerms];
-        updated[index] = { ...updated[index], checked: !updated[index].checked };
-        setRecommendedTerms(updated);
-        syncGlossaryWithBackend(updated);
-    };
     const handleToggleLibrary = async (libraryId: string) => {
         if (!activeProject || isSavingLibraries)
             return;
@@ -622,29 +549,6 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
     const handleDeleteTerm = (index: number) => {
         const updated = recommendedTerms.filter((_, i) => i !== index);
         setRecommendedTerms(updated);
-        syncGlossaryWithBackend(updated);
-    };
-    // Manual addition of glossary terminology (补充项目)
-    const handleAddCustomTerm = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!newSource.trim() || !newTarget.trim())
-            return;
-        const newTerm: RecommendedTerm = {
-            source: newSource.trim(),
-            target: newTarget.trim(),
-            category: newDesc.trim() || DEFAULT_CATEGORY,
-            description: newDesc.trim() || DEFAULT_CATEGORY,
-            explanation: 'Manually added customized term',
-            checked: true
-        };
-        const updated = [...recommendedTerms, newTerm];
-        setRecommendedTerms(updated);
-        // Clear inputs and hide the micro form
-        setNewSource('');
-        setNewTarget('');
-        setNewDesc(DEFAULT_CATEGORY);
-        setShowAddForm(false);
-        // Sync to backend storage
         syncGlossaryWithBackend(updated);
     };
     // Demo Project initializer trigger
@@ -906,7 +810,7 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
                 syncGlossaryWithBackend(updated);
             }} className="max-w-48 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs font-semibold text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer hover:bg-muted/30 transition-all font-sans">
                       {GLOSSARY_CATEGORIES.map(cat => (<option key={cat} value={cat}>
-                          {cat}
+                          {GLOSSARY_CATEGORY_LABELS[cat as GlossaryCategoryKey] || cat}
                         </option>))}
                     </select>
                     {editingProjectExplanationIndex === index ? (<textarea value={editingProjectExplanation} autoFocus onChange={(e) => setEditingProjectExplanation(e.target.value)} onBlur={() => saveProjectExplanation(index)} onKeyDown={(e) => {
@@ -934,7 +838,7 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
                 <input type="text" placeholder={glossaryLanguageLabels.targetPlaceholder} value={newTarget} onChange={(e) => setNewTarget(e.target.value)} className="col-span-4 rounded-lg border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none"/>
                 <select value={newDesc || DEFAULT_CATEGORY} onChange={(e) => setNewDesc(e.target.value)} className="col-span-3 max-w-48 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-primary focus:outline-none cursor-pointer font-sans">
                   {GLOSSARY_CATEGORIES.map(cat => (<option key={cat} value={cat}>
-                      {cat}
+                      {GLOSSARY_CATEGORY_LABELS[cat as GlossaryCategoryKey] || cat}
                     </option>))}
                 </select>
                 <div className="col-span-2 flex items-center justify-end">

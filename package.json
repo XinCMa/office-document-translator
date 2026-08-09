@@ -12,11 +12,12 @@
     "start": "node scripts/start.mjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "node --import tsx --test server/term-hints.test.ts server/translation-pause.test.ts src/components/review-search-match.test.ts src/components/review-translation-controls.test.tsx",
+    "test": "node --import tsx --test server/term-hints.test.ts server/translation-pause.test.ts server/xlsx.test.ts src/components/review-search-match.test.ts src/components/review-translation-controls.test.tsx src/lib/glossary.test.ts",
     "check": "npm run lint && npm test && npm run build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
+    "@tanstack/react-virtual": "^3.14.9",
     "@vitejs/plugin-react": "^5.0.4",
     "@xmldom/xmldom": "^0.9.10",
     "dotenv": "^17.2.3",
@@ -24,7 +25,7 @@
     "jszip": "^3.10.1",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
-    "multer": "^2.1.1",
+    "multer": "^2.2.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "vite": "^6.2.3"
@@ -33,6 +34,8 @@
     "@types/express": "^4.17.21",
     "@types/multer": "^2.1.0",
     "@types/node": "^22.14.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",

@@ -1,7 +1,5 @@
 import path from 'path';
 import fs from 'fs';
-import JSZip from 'jszip';
-import { DOMParser } from '@xmldom/xmldom';
 import { GlossaryTerm, ExtractedTextItem, TranslationDirection, SegmentTermHint } from './db.js';
 
 export interface GlossaryConflict {
@@ -52,10 +50,6 @@ export interface ProjectGlossaryReviewCandidate {
 export interface ProjectGlossaryLinkResult {
   terms: GlossaryTerm[];
   reviewCandidates: ProjectGlossaryReviewCandidate[];
-}
-
-function textContent(node: any): string {
-  return node?.textContent?.replace(/\s+/g, ' ').trim() || '';
 }
 
 function parseCsv(content: string): string[][] {
@@ -252,74 +246,6 @@ function rowsToTerms(rows: string[][]): { terms: GlossaryTerm[]; skippedRows: nu
   }
 
   return { terms, skippedRows };
-}
-
-async function parseDocxGlossary(buffer: Buffer): Promise<{ terms: GlossaryTerm[]; skippedRows: number }> {
-  const zip = await JSZip.loadAsync(buffer);
-  const documentXml = await zip.file('word/document.xml')?.async('string');
-  if (!documentXml) throw new Error('DOCX glossary is missing word/document.xml');
-
-  const doc = new DOMParser().parseFromString(documentXml, 'text/xml');
-  const tableNodes = Array.from(doc.getElementsByTagName('w:tbl'));
-  const rows: string[][] = [];
-
-  for (const table of tableNodes) {
-    const trNodes = Array.from(table.getElementsByTagName('w:tr'));
-    for (const tr of trNodes) {
-      const cells = Array.from(tr.getElementsByTagName('w:tc')).map(textContent);
-      if (cells.some(Boolean)) rows.push(cells);
-    }
-  }
-
-  return rowsToTerms(rows);
-}
-
-async function parseXlsxGlossary(buffer: Buffer): Promise<{ terms: GlossaryTerm[]; skippedRows: number }> {
-  const zip = await JSZip.loadAsync(buffer);
-  const sharedStringsXml = await zip.file('xl/sharedStrings.xml')?.async('string');
-  const sharedStrings: string[] = [];
-
-  if (sharedStringsXml) {
-    const sharedDoc = new DOMParser().parseFromString(sharedStringsXml, 'text/xml');
-    for (const si of Array.from(sharedDoc.getElementsByTagName('si'))) {
-      sharedStrings.push(textContent(si));
-    }
-  }
-
-  const workbookRels = await zip.file('xl/_rels/workbook.xml.rels')?.async('string');
-  const workbookXml = await zip.file('xl/workbook.xml')?.async('string');
-  let sheetPath = 'xl/worksheets/sheet1.xml';
-
-  if (workbookXml && workbookRels) {
-    const workbookDoc = new DOMParser().parseFromString(workbookXml, 'text/xml');
-    const firstSheet = workbookDoc.getElementsByTagName('sheet')[0];
-    const relId = firstSheet?.getAttribute('r:id');
-    if (relId) {
-      const relsDoc = new DOMParser().parseFromString(workbookRels, 'text/xml');
-      const rel = Array.from(relsDoc.getElementsByTagName('Relationship')).find(r => r.getAttribute('Id') === relId);
-      const target = rel?.getAttribute('Target');
-      if (target) sheetPath = `xl/${target.replace(/^\/?xl\//, '')}`;
-    }
-  }
-
-  const sheetXml = await zip.file(sheetPath)?.async('string');
-  if (!sheetXml) throw new Error('XLSX glossary is missing the first worksheet XML');
-
-  const sheetDoc = new DOMParser().parseFromString(sheetXml, 'text/xml');
-  const rows: string[][] = [];
-
-  for (const rowNode of Array.from(sheetDoc.getElementsByTagName('row'))) {
-    const row: string[] = [];
-    for (const cellNode of Array.from(rowNode.getElementsByTagName('c'))) {
-      const type = cellNode.getAttribute('t');
-      const value = textContent(cellNode.getElementsByTagName('v')[0]);
-      const inlineValue = textContent(cellNode.getElementsByTagName('is')[0]);
-      row.push(type === 's' ? (sharedStrings[Number(value)] || '') : (inlineValue || value));
-    }
-    if (row.some(Boolean)) rows.push(row);
-  }
-
-  return rowsToTerms(rows);
 }
 
 export async function parseGlossaryFile(filePath: string, originalName: string): Promise<{ terms: GlossaryTerm[]; skippedRows: number }> {

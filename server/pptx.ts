@@ -41,7 +41,7 @@ export async function extractPPTXText(buffer: Buffer): Promise<PPTXStats> {
     slideNum: number,
     slidePath: string,
     partPath: string,
-    partType: 'slide' | 'diagram'
+    partType: 'slide' | 'diagram' | 'chart'
   ) => {
     const doc = parser.parseFromString(xmlContent, 'text/xml');
     const pElements = doc.getElementsByTagName('a:p');

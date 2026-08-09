@@ -1,6 +1,6 @@
 export type TranslationDirection = string;
 export type TranslationDomain = 'business';
-export type DocumentType = 'pptx' | 'docx' | 'pdf' | 'xlsx';
+export type DocumentType = 'pptx' | 'docx' | 'xlsx';
 export type TranslationPhase = 'preparing' | 'translating' | 'pausing' | 'paused' | 'qa_checking' | 'glossary_checking' | 'backfilling' | 'finalizing' | 'completed';
 
 export interface TranslationProgress {
@@ -78,7 +78,7 @@ export interface ExtractedTextItem {
   slideNum: number;
   slidePath?: string;
   partPath?: string;
-  partType?: 'slide' | 'diagram' | 'document';
+  partType?: 'slide' | 'diagram' | 'chart' | 'document';
   pIdx?: number;
   sourceHash?: string;
   originalText: string;

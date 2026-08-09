@@ -1,6 +1,6 @@
-# Office Document Translator
+# AI Office 文档本地化工作台
 
-本地运行的 AI Office 文档翻译工作台：导入 Office 文件，完成上下文翻译、术语治理、人工审校，并生成尽量保留原格式的译文文件。
+本地运行的 AI Office 文档本地化工作台：导入 Office 文件，完成上下文翻译、术语治理、人工审校，并生成尽量保留原格式的译文文件。
 
 **第一次翻得准，长期用得稳。** 目前支持 PPTX、DOCX、XLSX，以及中文、英语、法语、日语、意大利语和阿拉伯语等翻译方向。
 
@@ -11,7 +11,7 @@
 把下面整段复制给 Codex、Claude Code、Cursor 等可以操作终端的编程 Agent：
 
 ```text
-请在我的电脑上安装并验证 Office Document Translator：
+请在我的电脑上安装并验证 AI Office 文档本地化工作台：
 https://github.com/XinCMa/office-document-translator
 
 要求：
@@ -76,6 +76,7 @@ Server fully operational on http://localhost:8080
 | `AI_MODEL` | 是¹ | `deepseek-chat` | 服务商提供的模型 ID |
 | `AI_API_PROVIDER` | 否 | 自动识别 | 显示在页面上的服务商名称 |
 | `TRANSLATION_CONCURRENCY` | 否 | `6` | 同时处理的请求批次，限制为 1–12 |
+| `MAX_UPLOAD_SIZE_MB` | 否 | 不限制 | 可选的本地文件大小保护上限；留空或设为非正数表示不限制 |
 | `HOST` | 否 | `127.0.0.1` | 服务监听地址；本地使用请保持默认 |
 | `PORT` | 否 | `8080` | 本地端口 |
 | `DATA_DIR` | 否 | `./data` | 项目、术语库和翻译记忆目录 |

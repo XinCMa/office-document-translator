@@ -7,29 +7,8 @@ import ReviewTable from './components/ReviewTable';
 import GlossaryManager from './components/GlossaryManager';
 import QAView from './components/QAView';
 import { apiFetch } from './lib/api';
-// Precise word boundary mapping to avoid overly broad matching in incremental segments
-export function isGlossaryTermMatch(text: string | null | undefined, term: string | null | undefined): boolean {
-    if (!text || !term)
-        return false;
-    const escapeRegExp = (value: string) => value.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-    const isCjk = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]/.test(term);
-    if (isCjk) {
-        return text.toLowerCase().includes(term.toLowerCase());
-    }
-    const compactTerm = term.trim();
-    if (!compactTerm)
-        return false;
-    const words = compactTerm.split(/\s+/);
-    const lastWord = words[words.length - 1];
-    const prefix = words.slice(0, -1).map(escapeRegExp).join('\\s+');
-    const suffixPattern = /^[a-z]+$/i.test(lastWord) && lastWord.length >= 4
-        ? (lastWord.toLowerCase().endsWith('e')
-            ? `${escapeRegExp(lastWord.slice(0, -1))}(?:e|es|ed|ing|ion|ions|ive|ives|er|ers)?`
-            : `${escapeRegExp(lastWord)}(?:s|es|ed|ing|ion|ions|ive|ives|er|ers)?`)
-        : escapeRegExp(lastWord);
-    const pattern = words.length > 1 ? `${prefix}\\s+${suffixPattern}` : suffixPattern;
-    return new RegExp(`\\b${pattern}\\b`, 'i').test(text);
-}
+import { isGlossaryTermMatch } from './lib/glossary';
+import { displayLanguageLabel } from './lib/language';
 const normalizeGlossaryValue = (value: unknown): string => String(value || '').trim();
 const languagePairForDirection = (direction: TranslationDirection) => direction === 'zh-en'
     ? { sourceLang: 'Simplified Chinese', targetLang: 'English' }
@@ -53,22 +32,6 @@ const normalizeTranslationDomain = (_domain: unknown): TranslationDomain => {
     return 'business';
 };
 const TARGET_LANGUAGE_OPTIONS = ['Simplified Chinese', 'English', 'French', 'Japanese', 'Italian', 'Arabic'];
-const displayLanguageLabel = (language?: string): string => {
-    const normalized = String(language || '').toLowerCase();
-    if (normalized.includes('simplified chinese'))
-        return '简体中文';
-    if (normalized.includes('english'))
-        return '英语';
-    if (normalized.includes('french'))
-        return '法语';
-    if (normalized.includes('japanese'))
-        return '日语';
-    if (normalized.includes('italian'))
-        return '意大利语';
-    if (normalized.includes('arabic'))
-        return '阿拉伯语';
-    return language || '自动检测';
-};
 const getToneForTargetLanguage = (targetLang: string): string => `professional business/training ${targetLang}`;
 type StepNavigationReason = 'initial-project-load' | 'upload-reset' | 'project-deleted' | 'system-reset' | 'stepper' | 'project-card' | 'upload-view' | 'glossary-confirm' | 'language-review' | 'incremental-retranslate' | 'review-next' | 'review-prev' | 'qa-prev' | 'back-home' | 'fallback';
 export default function App() {
@@ -165,6 +128,7 @@ export default function App() {
     }, [activeProjectSummary?.id, activeProjectSummary?.targetLang]);
     const openPersonalGlossary = () => {
         setShowGlobalGlossary(true);
+        void loadGlossary();
     };
     const closePersonalGlossary = () => {
         setShowGlobalGlossary(false);
@@ -265,6 +229,20 @@ export default function App() {
             handleStartTranslation(activeProjectSummary.sourceLang || sourceLangStep3 || pair.sourceLang, activeProjectSummary.targetLang || targetLangStep3 || pair.targetLang, activeProjectSummary.tone || toneStep3 || 'professional training/business Chinese', activeProjectSummary.glossaryPreset || 'business', translationDirection, translationDomain);
         }
     }, [currentStep, activeProjectSummary?.id, activeProjectSummary?.status, activeProjectIsTranslating]);
+    // Poll while a task is running, but back off while the tab is hidden so a
+    // background tab does not hammer the local server every second.
+    const startAdaptivePolling = (poll: () => void, activeIntervalMs: number, hiddenIntervalMs: number) => {
+        let intervalId = window.setInterval(poll, document.hidden ? hiddenIntervalMs : activeIntervalMs);
+        const handleVisibilityChange = () => {
+            window.clearInterval(intervalId);
+            intervalId = window.setInterval(poll, document.hidden ? hiddenIntervalMs : activeIntervalMs);
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            window.clearInterval(intervalId);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    };
     // Periodically poll backend to update the translation comparison table and progress bar in real-time
     useEffect(() => {
         const ids = translatingProjectsKey ? translatingProjectsKey.split('|').filter(Boolean) : [];
@@ -274,17 +252,13 @@ export default function App() {
             ids.forEach(id => loadProjectDetail(id));
         };
         pollProjects();
-        const intervalId = setInterval(pollProjects, 1000);
-        return () => {
-            clearInterval(intervalId);
-        };
+        return startAdaptivePolling(pollProjects, 1000, 5000);
     }, [translatingProjectsKey]);
     useEffect(() => {
         const projectId = activeProjectSummary?.id;
         if (!isGenerating || !projectId)
             return;
-        const intervalId = window.setInterval(() => loadProjectDetail(projectId), 500);
-        return () => window.clearInterval(intervalId);
+        return startAdaptivePolling(() => loadProjectDetail(projectId), 500, 3000);
     }, [isGenerating, activeProjectSummary?.id]);
     useEffect(() => {
         setTranslatingProjectIds(prev => {
@@ -315,10 +289,7 @@ export default function App() {
             ids.forEach(id => loadProjectDetail(id));
         };
         pollProjects();
-        const intervalId = setInterval(pollProjects, 1500);
-        return () => {
-            clearInterval(intervalId);
-        };
+        return startAdaptivePolling(pollProjects, 1500, 5000);
     }, [preDetectProjectsKey]);
     const loadProjects = async () => {
         setLoadingProjects(true);
@@ -357,17 +328,13 @@ export default function App() {
             console.error('Failed to load glossary:', err);
         }
     };
+    const syncDefaultGlossaryState = (nextGlossary: GlossaryTerm[]) => {
+        setGlossary(nextGlossary);
+        setGlossaryLibraries(previous => previous.map(library => library.id.startsWith('default_')
+            ? { ...library, terms: nextGlossary }
+            : library));
+    };
     const handleGlossaryLibrariesChanged = (libraries: GlossaryLibrary[]) => {
-        const previousIds = new Set(glossaryLibraries.map(library => library.id));
-        const nextIds = new Set(libraries.map(library => library.id));
-        const created = libraries.filter(library => !previousIds.has(library.id)).length;
-        const deleted = glossaryLibraries.filter(library => !nextIds.has(library.id)).length;
-        const updated = libraries.filter(library => {
-            const previous = glossaryLibraries.find(item => item.id === library.id);
-            return previous && JSON.stringify(previous) !== JSON.stringify(library);
-        }).length;
-        if (created || deleted || updated) {
-        }
         setGlossaryLibraries(libraries);
         const defaultLibrary = libraries.find(library => library.id.startsWith('default_'));
         if (defaultLibrary)
@@ -497,7 +464,7 @@ export default function App() {
         setModalConfig({
             isOpen: true,
             title: '⚠️ 恢复出厂设置确认',
-            message: '【强力重置警告】此操作将彻底洗牌，数据无法恢复！它会执行：\n1. 清空所有已上传的项目及 PPTX 实物数据。\n2. 重置内置的自定义术语词表（Glossary）并恢复 factory 默认值。\n3. 彻底清除所有缓存的翻译记忆（TM）对照表。',
+            message: '【强力重置警告】此操作将彻底洗牌，数据无法恢复！它会执行：\n1. 清空所有已上传的项目数据。\n2. 重置内置的自定义术语词表（Glossary）并恢复 factory 默认值。\n3. 彻底清除所有缓存的翻译记忆（TM）对照表。',
             confirmText: '是的，彻底重置所有数据',
             cancelText: '取消',
             isDanger: true,
@@ -917,7 +884,7 @@ export default function App() {
                 throw new Error(errorData.error || 'Failed to submit term.');
             }
             const data = await res.json();
-            setGlossary(data.glossary);
+            syncDefaultGlossaryState(data.glossary);
         }
         catch (err: any) {
             setErrorMessage(err.message || 'Failed to add term to global list.');
@@ -949,7 +916,7 @@ export default function App() {
             latestGlossary = data.glossary;
         }
         if (latestGlossary) {
-            setGlossary(latestGlossary);
+            syncDefaultGlossaryState(latestGlossary);
         }
     };
     const glossaryDialogKey = (term: GlossaryTerm): string => `${term.source.trim().toLowerCase()}|||${term.target.trim().toLowerCase()}`;
@@ -1018,7 +985,7 @@ export default function App() {
             throw new Error(errorData.error || 'Failed to update glossary term.');
         }
         const data = await res.json();
-        setGlossary(data.glossary);
+        syncDefaultGlossaryState(data.glossary);
     };
     const handleDeleteGlossaryTerm = async (source: string, target?: string) => {
         try {
@@ -1028,7 +995,7 @@ export default function App() {
             });
             if (res.ok) {
                 const data = await res.json();
-                setGlossary(data.glossary);
+                syncDefaultGlossaryState(data.glossary);
             }
         }
         catch (err) {
@@ -1297,7 +1264,7 @@ export default function App() {
               <Languages className="w-5 h-5 animate-pulse"/>
             </div>
           <div className="ml-2">
-              <span className="text-sm font-bold tracking-tight text-foreground">AI 文档本地化工作台</span>
+              <span className="text-sm font-bold tracking-tight text-foreground">AI Office 文档本地化工作台</span>
               {systemConfig?.hasApiKey ? (<span className="text-[10px] font-sans font-bold px-2.5 py-0.5 rounded-full ml-3 border transition-all bg-blue-50 text-blue-700 border-blue-150" title={`${systemConfig.activeEngine} · ${systemConfig.model}`}>
                   {systemConfig.activeEngine} 已就绪
                 </span>) : systemConfig ? (<span className="text-[10px] font-sans font-bold px-2.5 py-0.5 rounded-full ml-3 border border-amber-200 bg-amber-50 text-amber-700">
@@ -1474,7 +1441,7 @@ export default function App() {
                     <ChevronLeft className="h-5 w-5"/>
                   </button>
                 </div>
-                <GlossaryManager glossary={glossary} libraries={glossaryLibraries} onAddTerm={handleAddGlossaryTerm} onUpdateTerm={handleUpdateGlossaryTerm} onDeleteTerm={handleDeleteGlossaryTerm} onGlossaryImported={setGlossary} onLibrariesChanged={handleGlossaryLibrariesChanged} isAdding={isAddingGlossary}/>
+                <GlossaryManager glossary={glossary} libraries={glossaryLibraries} onAddTerm={handleAddGlossaryTerm} onUpdateTerm={handleUpdateGlossaryTerm} onDeleteTerm={handleDeleteGlossaryTerm} onGlossaryImported={syncDefaultGlossaryState} onLibrariesChanged={handleGlossaryLibrariesChanged} isAdding={isAddingGlossary}/>
               </div>)}
 
             {/* Step 1 & Step 2 rendered inside UploadView */}
