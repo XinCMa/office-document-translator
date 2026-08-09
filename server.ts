@@ -721,7 +721,7 @@ async function startServer() {
         const itemsBySlide = new Map<number, ExtractedTextItem[]>();
         const itemsByPart = new Map<string, ExtractedTextItem[]>();
         const normalizeContextText = (value: string | undefined): string => String(value || '').replace(/\s+/g, ' ').trim();
-        const isSentenceLike = (text: string): boolean => /[.!?銆傦紒锛燂紱;]$/.test(text.trim());
+        const isSentenceLike = (text: string): boolean => /[.!?\u3002\uff01\uff1f\uff1b;]$/.test(text.trim());
         const isLikelyHeading = (text: string): boolean => {
             const clean = normalizeContextText(text);
             if (clean.length < 3 || clean.length > 120)
@@ -1267,8 +1267,8 @@ async function startServer() {
             const recommendedGlossary = [
                 { source: 'Artificial Intelligence', target: '\u4eba\u5de5\u667a\u80fd', category: 'Industry Domain', explanation: 'Core AI terminology', checked: true },
                 { source: 'Deep Learning', target: '\u6df1\u5ea6\u5b66\u4e60', category: 'Industry Domain', explanation: 'Machine learning method based on neural networks', checked: true },
-                { source: 'Model Orchestration', target: '妯″瀷缂栨帓', category: 'Industry Domain', explanation: 'Coordinating multiple AI models or model calls in a workflow', checked: true },
-                { source: 'Large Language Model', target: '澶ц瑷€妯″瀷', category: 'Industry Domain', explanation: 'LLM = Large Language Model', checked: true }
+                { source: 'Model Orchestration', target: '模型编排', category: 'Industry Domain', explanation: 'Coordinating multiple AI models or model calls in a workflow', checked: true },
+                { source: 'Large Language Model', target: '大语言模型', category: 'Industry Domain', explanation: 'LLM = Large Language Model', checked: true }
             ];
             const project: Project = {
                 id: projectId,

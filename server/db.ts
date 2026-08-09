@@ -16,7 +16,7 @@ export interface ExtractedTextItem {
   slideNum: number;
   slidePath?: string;
   partPath?: string;
-  partType?: 'slide' | 'diagram' | 'document';
+  partType?: 'slide' | 'diagram' | 'chart' | 'document';
   pIdx?: number;
   sourceHash?: string;
   originalText: string;
@@ -410,12 +410,12 @@ class Database {
   }
 
   private load() {
-    try {
-      if (!fs.existsSync(DB_FILE)) {
-        this.save();
-        return;
-      }
+    if (!fs.existsSync(DB_FILE)) {
+      this.save();
+      return;
+    }
 
+    try {
       const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
       this.cache = {
         projects: Object.fromEntries(
@@ -457,13 +457,25 @@ class Database {
       };
       this.save();
     } catch (error) {
-      console.error('Error loading local database:', error);
+      // An existing file that cannot be parsed must not be silently replaced:
+      // the next save() would overwrite db.json with an empty cache and destroy
+      // data that might still be recoverable. Refuse to start instead.
+      console.error(`Fatal: failed to load existing database at ${DB_FILE}:`, error);
+      throw new Error(
+        `The local database ${DB_FILE} is corrupted and cannot be parsed. ` +
+        'Refusing to start to avoid overwriting it with empty data. ' +
+        'Please repair or restore the file, then start again.'
+      );
     }
   }
 
   private save() {
     try {
-      fs.writeFileSync(DB_FILE, JSON.stringify(this.cache, null, 2), 'utf-8');
+      // Atomic write: serialize to a temp file first, then rename over the
+      // target so a crash mid-write can never leave db.json truncated.
+      const tmpFile = `${DB_FILE}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(this.cache, null, 2), 'utf-8');
+      fs.renameSync(tmpFile, DB_FILE);
     } catch (e) {
       console.error('Error saving database to file:', e);
     }

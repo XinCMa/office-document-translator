@@ -78,7 +78,7 @@ export interface ExtractedTextItem {
   slideNum: number;
   slidePath?: string;
   partPath?: string;
-  partType?: 'slide' | 'diagram' | 'document';
+  partType?: 'slide' | 'diagram' | 'chart' | 'document';
   pIdx?: number;
   sourceHash?: string;
   originalText: string;
