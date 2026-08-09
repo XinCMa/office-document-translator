@@ -7,7 +7,7 @@ import { normalizeStoredFileName } from './file-name.js';
 
 export type TranslationDirection = string;
 export type TranslationDomain = 'business';
-export type DocumentType = 'pptx' | 'docx' | 'pdf' | 'xlsx';
+export type DocumentType = 'pptx' | 'docx' | 'xlsx';
 
 export interface ExtractedTextItem {
   id: string; // slideNum_p_idx
@@ -283,6 +283,10 @@ function normalizeStoredLanguage(value: any): string | undefined {
 }
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
+// Rapid mutations (e.g. per-segment translation progress updates) are coalesced
+// into a single disk write instead of serializing the whole cache every time.
+const SAVE_DEBOUNCE_MS = 300;
+
 function normalizeGlossaryTerm(raw: any): GlossaryTerm {
   const source = String(raw?.source || '').trim();
   const explanation = raw?.explanation || raw?.description || undefined;
@@ -327,9 +331,7 @@ function normalizeProject(project: any): Project {
   const ext = path.extname(String(normalized.originalName || '')).toLowerCase();
   normalized.documentType = normalized.documentType === 'xlsx' || ext === '.xlsx'
     ? 'xlsx'
-    : (normalized.documentType === 'pdf' || ext === '.pdf'
-      ? 'pdf'
-      : (normalized.documentType === 'docx' || ext === '.docx' ? 'docx' : 'pptx'));
+    : (normalized.documentType === 'docx' || ext === '.docx' ? 'docx' : 'pptx');
   normalized.translationDirection = normalizeTranslationDirection(normalized.translationDirection, normalized.sourceLang, normalized.targetLang);
   normalized.translationDomain = normalizeTranslationDomain(normalized.translationDomain);
   const pair = languagePairForDirection(normalized.translationDirection);
@@ -397,10 +399,12 @@ class Database {
     translationMemory: {},
     translationMemoryByClientId: {}
   };
+  private saveTimer: NodeJS.Timeout | null = null;
 
   constructor() {
     this.ensureDirectory();
     this.load();
+    this.registerShutdownFlush();
   }
 
   private ensureDirectory() {
@@ -411,7 +415,7 @@ class Database {
 
   private load() {
     if (!fs.existsSync(DB_FILE)) {
-      this.save();
+      this.flush();
       return;
     }
 
@@ -455,7 +459,7 @@ class Database {
         translationMemory: parsed.translationMemory || {},
         translationMemoryByClientId: parsed.translationMemoryByClientId || {}
       };
-      this.save();
+      this.flush();
     } catch (error) {
       // An existing file that cannot be parsed must not be silently replaced:
       // the next save() would overwrite db.json with an empty cache and destroy
@@ -470,6 +474,17 @@ class Database {
   }
 
   private save() {
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.flush();
+    }, SAVE_DEBOUNCE_MS);
+    // Never keep the event loop alive solely for a pending write; the
+    // shutdown hooks below guarantee the flush still happens on exit.
+    this.saveTimer.unref?.();
+  }
+
+  private flush() {
     try {
       // Atomic write: serialize to a temp file first, then rename over the
       // target so a crash mid-write can never leave db.json truncated.
@@ -478,6 +493,23 @@ class Database {
       fs.renameSync(tmpFile, DB_FILE);
     } catch (e) {
       console.error('Error saving database to file:', e);
+    }
+  }
+
+  private registerShutdownFlush() {
+    const flushPending = () => {
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
+      this.flush();
+    };
+    process.on('exit', flushPending);
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      process.on(signal, () => {
+        flushPending();
+        process.exit(0);
+      });
     }
   }
 
@@ -719,10 +751,6 @@ class Database {
     if (!clientId) return;
     this.cache.translationMemoryByClientId[clientId] = {};
     this.save();
-  }
-
-  private makeId(prefix: string): string {
-    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   }
 
   public resetSystem(clientId?: string) {

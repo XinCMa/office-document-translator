@@ -993,7 +993,7 @@ export async function writeDOCXTranslations(
 
       const drawingPartPath = getDiagramDrawingPartPath(partPath);
       const drawingFile = drawingPartPath ? zip.file(drawingPartPath) : null;
-      if (drawingFile && sourceTranslations.size > 0) {
+      if (drawingPartPath && drawingFile && sourceTranslations.size > 0) {
         const drawingXml = await drawingFile.async('string');
         const drawingDoc = parseDocxXml(drawingXml);
         const drawingTranslations = cloneSourceTranslationMap(sourceTranslations);

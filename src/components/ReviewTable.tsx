@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { Search, Edit3, CheckCircle2, AlertTriangle, ShieldCheck, Check, X, Filter, Loader2, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { DocumentType, ExtractedTextItem, GlossaryTerm, ProjectSummary, TranslationProgress } from '../types';
 import { isGlossaryTermMatch } from '../lib/glossary';
+import { displayLanguageLabel } from '../lib/language';
 
 interface ReviewTableProps {
   projectId?: string;
@@ -35,15 +37,6 @@ export function isLiteralSearchMatch(text: string | null | undefined, search: st
   const normalizedSearch = search.trim().toLocaleLowerCase();
   if (!normalizedSearch) return true;
   return String(text || '').toLocaleLowerCase().includes(normalizedSearch);
-}
-
-function displayLanguageLabel(language: string | null | undefined): string {
-  const normalized = String(language || '').toLowerCase();
-  if (normalized.includes('chinese')) return '中文';
-  if (normalized.includes('english')) return '英文';
-  if (normalized.includes('italian')) return '意大利语';
-  if (normalized.includes('arabic')) return '阿拉伯语';
-  return language || '原语言';
 }
 
 function displayPageNumber(pageNumber: number | null | undefined, documentType?: DocumentType): string {
@@ -149,7 +142,7 @@ export default function ReviewTable({
   const slides = isWordDocument ? [] : Array.from(new Set(textItems.map(item => item.slideNum))).sort((a, b) => a - b);
 
   // Filter logic
-  const filteredItems = textItems.filter(item => {
+  const filteredItems = useMemo(() => textItems.filter(item => {
     const matchesSearch =
       isLiteralSearchMatch(item.originalText, searchTerm) ||
       isLiteralSearchMatch(item.translatedText, searchTerm);
@@ -158,7 +151,36 @@ export default function ReviewTable({
     const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
 
     return matchesSearch && matchesSlide && matchesStatus;
+  }), [textItems, searchTerm, slideFilter, statusFilter, isWordDocument]);
+
+  const virtualListRef = useRef<HTMLDivElement>(null);
+  const [virtualListOffset, setVirtualListOffset] = useState(0);
+  const getVirtualRowKey = useCallback(
+    (index: number) => filteredItems[index]?.id || index,
+    [filteredItems]
+  );
+  const rowVirtualizer = useWindowVirtualizer({
+    count: filteredItems.length,
+    estimateSize: () => 78,
+    overscan: 8,
+    scrollMargin: virtualListOffset,
+    getItemKey: getVirtualRowKey
   });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+
+  useLayoutEffect(() => {
+    const updateOffset = () => {
+      if (!virtualListRef.current) return;
+      setVirtualListOffset(window.scrollY + virtualListRef.current.getBoundingClientRect().top);
+    };
+    updateOffset();
+    window.addEventListener('resize', updateOffset);
+    return () => window.removeEventListener('resize', updateOffset);
+  }, [projectId, searchTerm, slideFilter, statusFilter, filteredItems.length]);
+
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [rowVirtualizer, projectId, searchTerm, slideFilter, statusFilter]);
 
   const startEditing = (item: ExtractedTextItem) => {
     setEditingItemId(item.id);
@@ -685,13 +707,19 @@ export default function ReviewTable({
           </div>
 
           {/* 表体 Rows */}
-          <div className="divide-y divide-border/60">
+          <div>
             {filteredItems.length === 0 ? (
               <div className="py-12 text-center text-muted-foreground text-xs font-medium">
                 暂无匹配当前检索和筛选条件的文段项目。
               </div>
             ) : (
-              filteredItems.map((item) => {
+              <div
+                ref={virtualListRef}
+                className="relative w-full"
+                style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+              >
+              {virtualRows.map((virtualRow) => {
+                const item = filteredItems[virtualRow.index];
                 const isEditingThis = editingItemId === item.id;
                 const isSavingThis = isUpdatingItem === item.originalText;
 
@@ -708,8 +736,17 @@ export default function ReviewTable({
 
                 return (
                   <div
-                    key={item.id}
-                    className={`grid grid-cols-12 gap-4 py-3.5 hover:bg-muted/30 rounded-lg px-2 transition-all duration-300 items-center text-left ${
+                    key={virtualRow.key}
+                    ref={rowVirtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)`
+                    }}
+                    className={`grid grid-cols-12 gap-4 py-3.5 hover:bg-muted/30 rounded-lg px-2 transition-all duration-300 items-center text-left border-b border-b-border/60 ${
                       isRecentlyUpdatedGlossary
                         ? 'bg-blue-50/10 border-l-4 border-l-primary/60 border-y border-y-primary/5 pl-1.5'
                         : 'border-l-4 border-l-transparent'
@@ -790,7 +827,13 @@ export default function ReviewTable({
                     </div>
                   </div>
                 );
-              })
+              })}
+              </div>
+            )}
+            {filteredItems.length > 0 && (
+              <div className="py-3 text-center text-muted-foreground text-[11px] font-medium">
+                共 {filteredItems.length} 条 · 已启用虚拟滚动
+              </div>
             )}
           </div>
         </div>

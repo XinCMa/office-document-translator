@@ -62,9 +62,9 @@ function removeAttr(attrs: string, name: string): string {
 
 export function collectXLSXSharedStrings(xml: string): string[] {
   const sharedStrings: string[] = [];
-  xml.replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (siMatch, siInner) => {
+  xml.replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (siMatch: string, siInner: string) => {
     const parts: string[] = [];
-    siInner.replace(/<t\b[^>]*>([\s\S]*?)<\/t>/g, (tMatch, text) => {
+    siInner.replace(/<t\b[^>]*>([\s\S]*?)<\/t>/g, (tMatch: string, text: string) => {
       parts.push(decodeXmlText(String(text)));
       return tMatch;
     });

@@ -149,11 +149,6 @@ async function callModelApi(
   return content;
 }
 
-export interface TranslationResult {
-  original: string;
-  translation: string;
-}
-
 export interface TranslationOccurrenceContext {
   locationLabel?: string;
   containerTitle?: string;
@@ -164,7 +159,7 @@ export interface TranslationOccurrenceContext {
 }
 
 export interface TranslationTextContext {
-  documentType?: 'pptx' | 'docx' | 'pdf' | 'xlsx';
+  documentType?: 'pptx' | 'docx' | 'xlsx';
   occurrences: TranslationOccurrenceContext[];
 }
 
@@ -204,10 +199,6 @@ function domainLabel(_domain: TranslationDomain): string {
 
 function domainGuidance(_domain: TranslationDomain, targetLang: string): string {
   return `Use professional business/training ${targetLang}. Preserve product, process, system, role, KPI, compliance, and operational terminology consistently.`;
-  const targetIsEnglish = String(targetLang || '').toLowerCase().includes('english');
-  return targetIsEnglish
-    ? 'Use professional business/training English. Preserve product, process, system, role, KPI, compliance, and operational terminology consistently.'
-    : '使用专业的商务/培训中文。产品、流程、系统、角色、KPI、合规和运营术语必须保持一致。';
 }
 
 function localizationGenerationGuidance(targetLang: string): string {
@@ -238,29 +229,6 @@ function targetTermLanguage(targetLang: string): string {
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-function buildTranslationBatches(strings: string[], maxItems = 25, maxChars = 6000): string[][] {
-  const batches: string[][] = [];
-  let current: string[] = [];
-  let currentChars = 0;
-
-  for (const source of strings) {
-    const nextChars = source.length;
-    const wouldOverflow = current.length > 0 && (
-      current.length >= maxItems || currentChars + nextChars > maxChars
-    );
-    if (wouldOverflow) {
-      batches.push(current);
-      current = [];
-      currentChars = 0;
-    }
-    current.push(source);
-    currentChars += nextChars;
-  }
-
-  if (current.length > 0) batches.push(current);
-  return batches;
-}
 
 function buildSegmentTranslationBatches(segments: TranslationSegmentRequest[], maxItems = 25, maxChars = 6000): TranslationSegmentRequest[][] {
   const batches: TranslationSegmentRequest[][] = [];
@@ -562,216 +530,6 @@ No other text outside this raw JSON structure.`
   return results;
 }
 
-export async function translateStrings(
-  strings: string[],
-  sourceLang: string,
-  targetLang: string,
-  tone: string,
-  glossary: GlossaryTerm[],
-  topic?: string,
-  onBatchComplete?: (batchIndex: number, totalBatches: number, batchCount: number, newlyTranslated: Record<string, string>) => void,
-  isIncremental: boolean = false,
-  translationDomain: TranslationDomain = 'business',
-  textContexts: TranslationContextMap = {}
-): Promise<Record<string, string>> {
-  if (strings.length === 0) return {};
-
-  const { providerName } = requireModelApiConfig();
-
-  const results: Record<string, string> = {};
-  const normalizedDomain = normalizeTranslationDomain(translationDomain);
-  const direction = inferTranslationDirection(sourceLang, targetLang);
-  const domain = domainLabel(normalizedDomain);
-  const scenarioGuidance = domainGuidance(normalizedDomain, targetLang);
-  const localizationGuidance = localizationGenerationGuidance(targetLang);
-  const targetLanguage = targetTermLanguage(targetLang);
-
-  // Group unique strings by both item count and character volume. Large Office
-  // documents often contain long text boxes where a fixed item-count batch can
-  // exceed the model's comfortable response size and cause omitted ids.
-  const batches = buildTranslationBatches(strings, 25, 6000);
-
-  // Build glossary text description. Active terms are binding; candidate terms
-  // are contextual options for ambiguous abbreviations or unresolved conflicts.
-  const strictGlossary = glossary.filter(term =>
-    term.status !== 'candidate' && term.status !== 'ambiguous' && term.status !== 'needs_review'
-  );
-  const candidateGlossary = glossary.filter(term =>
-    term.status === 'candidate' || term.status === 'ambiguous' || term.status === 'needs_review'
-  );
-  const formatGlossaryTerm = (term: GlossaryTerm) => {
-    const explanation = term.explanation || (term as any).description || "";
-    const source = String(term.source || '').trim();
-    const lowerSource = source.toLowerCase();
-    const derivedExamples = lowerSource.endsWith('e')
-      ? [`${source}d`, `${source.slice(0, -1)}ing`, `${source.slice(0, -1)}ion`, `${source.slice(0, -1)}ions`]
-      : [`${source}s`, `${source}ed`, `${source}ing`, `${source}ion`, `${source}ions`];
-    const inflectionNote = String(sourceLang || '').toLowerCase().includes('english') && /^[a-z]+$/i.test(source) && source.length >= 4
-      ? `\n  Also apply to normal inflected/derived forms such as ${derivedExamples.map(example => `"${example}"`).join(', ')} when they appear in source text.`
-      : "";
-    return `- Source: "${term.source}"\n  Target: "${term.target}"${inflectionNote}${explanation ? `\n  Explanation: "${explanation}"` : ""}`;
-  };
-  const strictGlossaryText = strictGlossary.length > 0
-    ? strictGlossary.map(formatGlossaryTerm).join('\n')
-    : "No strict glossary terms provided.";
-  const candidateGlossaryText = candidateGlossary.length > 0
-    ? candidateGlossary.map(formatGlossaryTerm).join('\n')
-    : "No contextual glossary candidates provided.";
-
-  console.log(`Translate system starting. Engine: ${providerName}. Total items: ${strings.length}. Batches: ${batches.length}. Topic context: ${topic || "None"}. Incremental Flag: ${isIncremental}`);
-
-  // Run batches in parallel, but fail loudly if any batch cannot be translated.
-  // Returning the original text as a silent fallback makes downstream QA look greener
-  // than it really is, which is dangerous for a translation product.
-  const translateBatch = async (batch: string[], bIndex: number) => withExponentialRetry(async () => {
-    console.log(`Initiating translation batch ${bIndex + 1}/${batches.length} with ${batch.length} items (${batch.reduce((sum, text) => sum + text.length, 0)} chars)...`);
-
-    const batchPayload = batch.map((text, itemIndex) => {
-      const payloadItem: any = {
-        id: `b${bIndex + 1}_t${itemIndex + 1}`,
-        text
-      };
-      const context = compactTranslationContext(textContexts[text]);
-      if (context) {
-        payloadItem.context = context;
-      }
-      return payloadItem;
-    });
-    const idToSource = new Map(batchPayload.map(item => [item.id, item.text]));
-
-    const prompts: ModelMessage[] = [
-      {
-        role: "system",
-        content: `You are a business presentation slide localization Assistant. Translate the input list of unique text fields from ${sourceLang} to ${targetLang}.
-
-**TRANSLATION CONTEXT**:
-- Direction: ${direction}
-- Content scenario: ${domain}
-- Target language: ${targetLang}. Every translated field must be in ${targetLanguage}, except explicitly preserved names/codes/URLs.
-- Tone: ${tone}
-- Scenario guidance: ${scenarioGuidance}
-${localizationGuidance}
-${isIncremental ? `**CRITICAL INCREMENTAL DIRECTIVE**: This is a targeted retranslation request. Use the current document topic, the provided glossary, and the latest terminology mappings. Do not reuse a previous translation if it conflicts with the glossary. Return a corrected translation for each input item.` : ""}
-
-**PRESERVATION RULES**:
-${topic ? `- Presentation Core Topic: ${topic}\n` : ""}- Preserve URLs, raw technical parameters, SQL commands, variable names, unchanged file paths, product names, legal terms, formula notation, units, citations, and specific acronyms unless a glossary term explicitly says otherwise.
-- Preserve tab characters (\\t) exactly in count and order. Translate the text around tabs, but do not replace tabs with spaces or remove them.
-- Keep slide text concise. Do not add explanations that were not present in the source.
-- Strict Glossary Rules: You MUST use these terms whenever their source appears in the text. Use the target term consistently, adjusting only surrounding grammar when necessary, and use the explanation to understand scope:
-${strictGlossaryText}
-
-- Contextual Glossary Candidates: These are possible translations for ambiguous terms or abbreviations. Choose the target whose explanation best matches the current source text, document topic, and scenario. Do not blindly apply the first candidate:
-${candidateGlossaryText}
-
-The user message is a JSON array of objects. Each object has:
-- "id": stable item id
-- "text": exact source text to translate
-- optional "context": document type and occurrence hints such as locationLabel, containerTitle, nearbyTexts, and role
-
-Translate each text as a standalone write-back unit, but use both the source text and its context to produce natural localized target-language writing. Treat nearby texts, titles/headings, location labels, and roles as disambiguation signals for business objects, process steps, system UI labels, table cells, SmartArt nodes, and short phrases. Do not translate nearbyTexts themselves unless they are the item text.
-You MUST return exactly one translation item for every input id. Do not omit any ids. Do not change ids.
-You MUST return a JSON object with a single "translations" key containing the array of translation results:
-{
-  "translations": [
-    {
-      "id": "same id from input",
-      "translation": "highly precise, translated counterpart"
-    }
-  ]
-}
-No other text outside this raw JSON structure.`
-      },
-      {
-        role: "user",
-        content: JSON.stringify(batchPayload)
-      }
-    ];
-
-    const contentResponse = await callModelApi(prompts, true);
-    const parsedObject = JSON.parse(cleanJsonResponse(contentResponse));
-    const finalItems = parseTranslationItems(parsedObject);
-
-    const batchResults: Record<string, string> = {};
-    for (const item of finalItems) {
-      if (!item) continue;
-      if (item.id && idToSource.has(String(item.id))) {
-        const source = idToSource.get(String(item.id))!;
-        batchResults[source] = String(item.translation || "").trim();
-      } else if (item.original && batch.includes(item.original)) {
-        // Backward-compatible fallback if the model returns the older format.
-        batchResults[item.original] = String(item.translation || "").trim();
-      }
-    }
-
-    const missingSources: string[] = [];
-    for (const source of batch) {
-      if (!batchResults[source] || batchResults[source].trim() === "") {
-        missingSources.push(source);
-      }
-    }
-
-    if (missingSources.length > 0) {
-      console.warn(`Model API batch ${bIndex + 1} omitted ${missingSources.length} items. Retrying individually...`);
-      for (let i = 0; i < missingSources.length; i++) {
-        const source = missingSources[i];
-        const retryId = `retry_${bIndex + 1}_${i + 1}`;
-        const retryMessages: ModelMessage[] = [
-          prompts[0],
-          {
-            role: "user",
-            content: JSON.stringify([{
-              id: retryId,
-              text: source,
-              ...(compactTranslationContext(textContexts[source]) ? { context: compactTranslationContext(textContexts[source]) } : {})
-            }])
-          }
-        ];
-        const retryTranslation = await withExponentialRetry(async () => {
-          const retryResponse = await callModelApi(retryMessages, true);
-          const retryParsed = JSON.parse(cleanJsonResponse(retryResponse));
-          const retryItems = parseTranslationItems(retryParsed);
-          const retryItem = retryItems.find(item => item && String(item.id) === retryId) || retryItems[0];
-          const translated = retryItem?.translation ? String(retryItem.translation).trim() : "";
-          if (!translated) {
-            throw new Error(`Model API batch ${bIndex + 1} did not return a translation for: ${source}`);
-          }
-          return translated;
-        }, `Model API individual retry ${retryId}`, 3);
-        batchResults[source] = retryTranslation;
-        }
-      }
-
-      if (onBatchComplete) {
-        onBatchComplete(bIndex, batches.length, batch.length, batchResults);
-      }
-
-    return { bIndex, batchResults };
-  }, `Model API batch ${bIndex + 1}`, 3);
-
-  const batchOuts = await runWithConcurrency(
-    batches.length,
-    getTranslationConcurrency(),
-    index => translateBatch(batches[index], index)
-  );
-
-  // Combine and map results back matching original inputs exactly
-  for (let bIndex = 0; bIndex < batches.length; bIndex++) {
-    const batch = batches[bIndex];
-    const match = batchOuts.find(o => o.bIndex === bIndex);
-    const batchResults = match ? match.batchResults : {};
-
-    for (const str of batch) {
-      if (batchResults[str]) {
-        results[str] = batchResults[str];
-      } else {
-        throw new Error(`Missing translation result for: ${str}`);
-      }
-    }
-  }
-
-  return results;
-}
-
 export interface PreDetectResult {
   topic_keywords: string[];
   description: string;
@@ -891,7 +649,6 @@ export async function runPreDetection(
       content: `# Role
 You are a senior terminology and enterprise localization analyst for ${domain} document translation.
 
-# Task
 # Task
 Analyze the provided document text and build a high-value, context-aware glossary for translation from ${sourceLang} to ${targetLang}.
 

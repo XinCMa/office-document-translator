@@ -5,6 +5,14 @@ import { GlossaryImportPreview, GlossaryLibrary, GlossaryTerm } from '../types';
 import { apiFetch } from '../lib/api';
 import { GLOSSARY_CATEGORY_KEYS, getGlossaryCategoryLabel } from '../lib/glossary';
 
+interface PendingConfirmAction {
+  title: string;
+  message: string;
+  detail?: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<void>;
+}
+
 const GLOSSARY_CATEGORY_OPTIONS: string[] = [...GLOSSARY_CATEGORY_KEYS];
 
 const GLOSSARY_SCOPE_OPTIONS: Array<{ value: GlossaryLibrary['scope']; label: string }> = [
@@ -138,6 +146,30 @@ export default function GlossaryManager({
   const [libraryPriority, setLibraryPriority] = useState('0');
   const [isSavingLibrary, setIsSavingLibrary] = useState(false);
   const [libraryError, setLibraryError] = useState<string | null>(null);
+  // Destructive actions are confirmed through an in-app modal instead of
+  // window.confirm so the dialog matches the product visual language.
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmAction | null>(null);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const closePendingConfirm = () => {
+    if (isConfirming) return;
+    setPendingConfirm(null);
+    setConfirmError(null);
+  };
+  const runPendingConfirm = async () => {
+    if (!pendingConfirm || isConfirming) return;
+    const action = pendingConfirm;
+    setIsConfirming(true);
+    setConfirmError(null);
+    try {
+      await action.onConfirm();
+      setPendingConfirm(null);
+    } catch (error) {
+      setConfirmError(error instanceof Error ? error.message : '操作失败，请重试。');
+    } finally {
+      setIsConfirming(false);
+    }
+  };
   const [pendingTermConflict, setPendingTermConflict] = useState<PendingTermConflict | null>(null);
   const [isResolvingTermConflict, setIsResolvingTermConflict] = useState(false);
 
@@ -456,18 +488,25 @@ export default function GlossaryManager({
     return matchesDirection && matchesSearch;
   }).sort(compareGlossaryTerms);
 
-  const handleDelete = async (source: string, target?: string) => {
-    const confirmed = window.confirm(`从“${activeLibrary?.name || '个人术语库'}”删除这条术语吗？\n\n${source}${target ? ` -> ${target}` : ''}`);
-    if (!confirmed) return;
-    if (activeLibrary && !isDefaultLibrary) {
-      await saveLibraryTerms(activeGlossary.filter(term => !(
-        term.source.trim().toLowerCase() === source.trim().toLowerCase()
-        && (!target || term.target.trim().toLowerCase() === target.trim().toLowerCase())
-      )));
-    } else {
-      await onDeleteTerm(source, target);
-      await refreshLibraries(activeLibrary?.id);
-    }
+  const handleDelete = (source: string, target?: string) => {
+    setConfirmError(null);
+    setPendingConfirm({
+      title: '删除术语',
+      message: `从“${activeLibrary?.name || '个人术语库'}”删除这条术语吗？`,
+      detail: `${source}${target ? ` -> ${target}` : ''}`,
+      confirmLabel: '删除术语',
+      onConfirm: async () => {
+        if (activeLibrary && !isDefaultLibrary) {
+          await saveLibraryTerms(activeGlossary.filter(term => !(
+            term.source.trim().toLowerCase() === source.trim().toLowerCase()
+            && (!target || term.target.trim().toLowerCase() === target.trim().toLowerCase())
+          )));
+        } else {
+          await onDeleteTerm(source, target);
+          await refreshLibraries(activeLibrary?.id);
+        }
+      }
+    });
   };
 
   const glossaryTermKey = (term: GlossaryTerm): string =>
@@ -743,14 +782,24 @@ export default function GlossaryManager({
     }
   };
 
-  const deleteActiveLibrary = async () => {
+  const deleteActiveLibrary = () => {
     if (!activeLibrary || isDefaultLibrary) return;
-    const confirmed = window.confirm(`删除术语库“${activeLibrary.name}”吗？\n\n其中 ${activeLibrary.terms.length} 条术语也会一并删除，此操作不可撤销。`);
-    if (!confirmed) return;
+    const libraryToDelete = activeLibrary;
+    setConfirmError(null);
+    setPendingConfirm({
+      title: '删除术语库',
+      message: `删除术语库“${libraryToDelete.name}”吗？`,
+      detail: `其中 ${libraryToDelete.terms.length} 条术语也会一并删除，此操作不可撤销。`,
+      confirmLabel: '删除术语库',
+      onConfirm: () => performDeleteLibrary(libraryToDelete)
+    });
+  };
+
+  const performDeleteLibrary = async (libraryToDelete: GlossaryLibrary) => {
     setIsSavingLibrary(true);
     setLibraryError(null);
     try {
-      const res = await apiFetch(`/api/glossary/libraries/${encodeURIComponent(activeLibrary.id)}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/glossary/libraries/${encodeURIComponent(libraryToDelete.id)}`, { method: 'DELETE' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || '删除术语库失败。');
@@ -763,6 +812,7 @@ export default function GlossaryManager({
       resetLibraryEditor();
     } catch (err: any) {
       setLibraryError(err.message || '删除术语库失败。');
+      throw err;
     } finally {
       setIsSavingLibrary(false);
     }
@@ -1336,6 +1386,72 @@ export default function GlossaryManager({
                   className="rounded-xl bg-primary px-3 py-2 text-xs font-bold text-primary-foreground transition hover:bg-primary-hover disabled:opacity-50"
                 >
                   {isResolvingTermConflict ? '处理中...' : '替换已有术语'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Destructive action confirmation modal */}
+      <AnimatePresence>
+        {pendingConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[1000] flex items-center justify-center bg-neutral-900/60 p-4 backdrop-blur-xs"
+            onClick={closePendingConfirm}
+          >
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              initial={{ scale: 0.96, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, y: 12 }}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-md rounded-2xl border border-border bg-card p-5 text-left shadow-2xl"
+            >
+              <div className="flex items-start gap-3">
+                <div className="rounded-xl bg-destructive-muted p-2 text-destructive">
+                  <Trash2 className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-bold text-foreground">{pendingConfirm.title}</h3>
+                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                    {pendingConfirm.message}
+                  </p>
+                </div>
+              </div>
+
+              {pendingConfirm.detail && (
+                <div className="mt-4 rounded-xl border border-border bg-muted/30 p-3 text-xs font-semibold text-foreground">
+                  {pendingConfirm.detail}
+                </div>
+              )}
+
+              {confirmError && (
+                <div role="alert" className="mt-3 rounded-xl border border-destructive/25 bg-destructive-muted p-3 text-xs font-semibold text-destructive">
+                  {confirmError}
+                </div>
+              )}
+
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={isConfirming}
+                  onClick={closePendingConfirm}
+                  className="rounded-xl border border-border bg-background px-3 py-2 text-xs font-bold text-foreground transition hover:bg-muted disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={isConfirming}
+                  onClick={() => void runPendingConfirm()}
+                  className="rounded-xl bg-destructive px-3 py-2 text-xs font-bold text-white transition hover:opacity-90 disabled:opacity-50"
+                >
+                  {isConfirming ? '处理中...' : pendingConfirm.confirmLabel}
                 </button>
               </div>
             </motion.div>

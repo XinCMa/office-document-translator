@@ -2,9 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, FileText, Languages, ChevronRight, Play, CheckCircle2, AlertCircle, Sparkles, Plus, Trash2, PlusCircle, Check, Loader2, ArrowUp, ArrowDown, ChevronLeft, ChevronDown, Globe2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GlossaryImportPreview, GlossaryLibrary, GlossaryTerm, ProjectSummary, TranslationDirection, TranslationDomain } from '../types';
-import JSZip from 'jszip';
 import { apiFetch } from '../lib/api';
 import { GLOSSARY_CATEGORY_KEYS, GLOSSARY_CATEGORY_LABELS, DEFAULT_GLOSSARY_CATEGORY, normalizeGlossaryCategory, type GlossaryCategoryKey } from '../lib/glossary';
+import { displayLanguageLabel } from '../lib/language';
 interface RecommendedTerm {
     source: string;
     target: string;
@@ -88,22 +88,6 @@ function inferProjectDirection(project: ProjectSummary | null, fallback: Transla
     if (source.includes('english') || target.includes('chinese'))
         return 'en-zh';
     return fallback;
-}
-function displayLanguageLabel(language?: string): string {
-    const normalized = String(language || '').toLowerCase();
-    if (normalized.includes('simplified chinese'))
-        return '简体中文';
-    if (normalized.includes('english'))
-        return '英语';
-    if (normalized.includes('french'))
-        return '法语';
-    if (normalized.includes('japanese'))
-        return '日语';
-    if (normalized.includes('italian'))
-        return '意大利语';
-    if (normalized.includes('arabic'))
-        return '阿拉伯语';
-    return language || '自动检测';
 }
 function getGlossaryLanguageLabels(sourceLang: string, targetLang: string) {
     return {
@@ -191,8 +175,7 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
     // Custom manual entry fields
     const [newSource, setNewSource] = useState('');
     const [newTarget, setNewTarget] = useState('');
-    const [newDesc, setNewDesc] = useState(DEFAULT_CATEGORY);
-    const [showAddForm, setShowAddForm] = useState(false);
+    const [newDesc, setNewDesc] = useState<string>(DEFAULT_CATEGORY);
     const [deleteConfirm, setDeleteConfirm] = useState<{
         index: number;
         word: string;
@@ -202,8 +185,6 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
     const [isImportingGlossary, setIsImportingGlossary] = useState(false);
     const [glossaryImportError, setGlossaryImportError] = useState<string | null>(null);
     const glossaryInputRef = useRef<HTMLInputElement>(null);
-    const [categoryFilter, setCategoryFilter] = useState('all');
-    const [statusFilter, setStatusFilter] = useState('all');
     const [editingProjectExplanationIndex, setEditingProjectExplanationIndex] = useState<number | null>(null);
     const [editingProjectExplanation, setEditingProjectExplanation] = useState('');
     const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([]);
@@ -238,38 +219,8 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
     const selectedProjectCount = recommendedTerms.filter(term => term.checked !== false).length;
     const personalMatchCount = recommendedTerms.filter(isPersonalGlossaryMatch).length;
     const aiRecommendationCount = recommendedTerms.filter(isAiTerm).length;
-    const reviewNeededCount = recommendedTerms.filter(isNeedsReviewTerm).length;
-    const categoryFilterOptions = [
-        { value: 'all', label: '全部领域', count: recommendedTerms.length },
-        ...GLOSSARY_CATEGORIES.map(category => ({
-            value: category,
-            label: GLOSSARY_CATEGORY_LABELS[category as GlossaryCategoryKey] || category,
-            count: recommendedTerms.filter(term => getTermCategory(term) === category).length
-        }))
-    ];
-    const statusFilterOptions = [
-        { value: 'all', label: '全部来源', count: recommendedTerms.length },
-        { value: 'personal', label: '个人术语命中', count: personalMatchCount },
-        { value: 'ai', label: 'AI 推荐', count: aiRecommendationCount },
-        { value: 'review', label: '需复核', count: reviewNeededCount },
-        { value: 'manual_imported', label: '手动/导入', count: recommendedTerms.filter(isManualOrImportedTerm).length }
-    ];
     const filteredRecommendedTerms = recommendedTerms
         .map((term, index) => ({ term, index }))
-        .filter(({ term }) => categoryFilter === 'all' || getTermCategory(term) === categoryFilter)
-        .filter(({ term }) => {
-        if (statusFilter === 'all')
-            return true;
-        if (statusFilter === 'personal')
-            return isPersonalGlossaryMatch(term);
-        if (statusFilter === 'ai')
-            return isAiTerm(term);
-        if (statusFilter === 'review')
-            return isNeedsReviewTerm(term);
-        if (statusFilter === 'manual_imported')
-            return isManualOrImportedTerm(term);
-        return true;
-    })
         .sort(compareRecommendedTermRows);
     // Show one floating scroll control only after the user has moved a little.
     useEffect(() => {
@@ -522,13 +473,6 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
             setIsImportingGlossary(false);
         }
     };
-    // Toggle specific term's checkbox
-    const handleToggleTerm = (index: number) => {
-        const updated = [...recommendedTerms];
-        updated[index] = { ...updated[index], checked: !updated[index].checked };
-        setRecommendedTerms(updated);
-        syncGlossaryWithBackend(updated);
-    };
     const handleToggleLibrary = async (libraryId: string) => {
         if (!activeProject || isSavingLibraries)
             return;
@@ -605,29 +549,6 @@ export default function UploadView({ onUploadSuccess, activeProject, onStartTran
     const handleDeleteTerm = (index: number) => {
         const updated = recommendedTerms.filter((_, i) => i !== index);
         setRecommendedTerms(updated);
-        syncGlossaryWithBackend(updated);
-    };
-    // Manual addition of glossary terminology (补充项目)
-    const handleAddCustomTerm = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!newSource.trim() || !newTarget.trim())
-            return;
-        const newTerm: RecommendedTerm = {
-            source: newSource.trim(),
-            target: newTarget.trim(),
-            category: newDesc.trim() || DEFAULT_CATEGORY,
-            description: newDesc.trim() || DEFAULT_CATEGORY,
-            explanation: 'Manually added customized term',
-            checked: true
-        };
-        const updated = [...recommendedTerms, newTerm];
-        setRecommendedTerms(updated);
-        // Clear inputs and hide the micro form
-        setNewSource('');
-        setNewTarget('');
-        setNewDesc(DEFAULT_CATEGORY);
-        setShowAddForm(false);
-        // Sync to backend storage
         syncGlossaryWithBackend(updated);
     };
     // Demo Project initializer trigger
