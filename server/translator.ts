@@ -893,7 +893,8 @@ Your goal is to identify terms that, if translated inconsistently or literally, 
 - **Domain focus**: Include product, system, process, role, KPI, compliance, finance, operations, sales, training, implementation, and company-specific business terms.
 - **Filter**: Strictly EXCLUDE common everyday words, human names, and locations.
 - **Note**: Quality over quantity. Output 0 terms if no meaningful business terminology exists.
-
+- **Acronym preservation**: If a source term is a widely recognized industry or domain acronym/initialism, such as DBA, KPI, ERP or API, preserve the original acronym exactly in 'target', regardless of the translation direction. Do not expand or translate it in 'target'. Put the inferred full form and contextual meaning only in 'explanation'. If the acronym is ambiguous, keep 'target' unchanged and explain the most likely meaning based on the document context.
+  
 For each term, provide:
 - \`source\`: Exact source term in ${sourceLang}.
 - \`target\`: Recommended ${termLanguage} translation.

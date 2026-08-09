@@ -126,6 +126,10 @@ export function detectSourceLanguageFromTexts(
   if (japaneseCount >= 8) return 'Japanese';
   if (arabicCount >= 8) return 'Arabic';
   if (cjkCount >= 12 && cjkCount >= latinCount * 0.45) return 'Simplified Chinese';
+  // Fallback for mixed-language documents (e.g. spreadsheets with English
+  // headers/IDs but Chinese data). The 0.45 ratio misses real Chinese content
+  // when English noise dominates, so add an absolute + lighter-ratio tier.
+  if (cjkCount >= 10 && cjkCount >= latinCount * 0.15) return 'Simplified Chinese';
 
   const scores = evidence.scores;
   const ranked = (Object.entries(scores) as Array<['English' | 'French' | 'Italian', number]>)

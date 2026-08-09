@@ -5,7 +5,7 @@ export interface ExtractedParagraph {
   slideNum: number;
   slidePath: string;
   partPath?: string;
-  partType?: 'slide' | 'diagram';
+  partType?: 'slide' | 'diagram' | 'chart';
   p_idx: number;
   originalText: string;
 }
@@ -107,6 +107,31 @@ export async function extractPPTXText(buffer: Buffer): Promise<PPTXStats> {
     return Array.from(new Set(diagramParts));
   };
 
+  const getRelatedChartParts = async (slidePath: string): Promise<string[]> => {
+    const relPath = slidePath.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+    const relFile = zip.file(relPath);
+    if (!relFile) return [];
+
+    const relXml = await relFile.async('string');
+    const relDoc = parser.parseFromString(relXml, 'text/xml');
+    const relationships = relDoc.getElementsByTagName('Relationship');
+    const chartParts: string[] = [];
+
+    for (let i = 0; i < relationships.length; i++) {
+      const rel = relationships[i];
+      const type = rel.getAttribute('Type') || '';
+      const target = rel.getAttribute('Target') || '';
+      // Chart parts hold axis / series / legend / title text that must also be translated.
+      if (!target || !type.endsWith('/chart')) continue;
+      const resolved = resolveRelationshipTarget(slidePath, target);
+      if (resolved.startsWith('ppt/charts/') && resolved.endsWith('.xml') && zip.file(resolved)) {
+        chartParts.push(resolved);
+      }
+    }
+
+    return Array.from(new Set(chartParts));
+  };
+
   for (const slidePath of slideFiles) {
     const slideNum = parseInt(slidePath.match(slideRegex)![1], 10);
     const xmlContent = await zip.file(slidePath)!.async('string');
@@ -117,6 +142,12 @@ export async function extractPPTXText(buffer: Buffer): Promise<PPTXStats> {
     for (const diagramPath of diagramParts) {
       const diagramXml = await zip.file(diagramPath)!.async('string');
       extractParagraphsFromXml(diagramXml, slideNum, slidePath, diagramPath, 'diagram');
+    }
+
+    const chartParts = await getRelatedChartParts(slidePath);
+    for (const chartPath of chartParts) {
+      const chartXml = await zip.file(chartPath)!.async('string');
+      extractParagraphsFromXml(chartXml, slideNum, slidePath, chartPath, 'chart');
     }
   }
 
