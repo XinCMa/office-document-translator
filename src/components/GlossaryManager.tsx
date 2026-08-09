@@ -3,22 +3,9 @@ import { Search, Plus, Trash2, Tag, AlertCircle, ArrowUp, ArrowDown, Upload, Pen
 import { motion, AnimatePresence } from 'motion/react';
 import { GlossaryImportPreview, GlossaryLibrary, GlossaryTerm } from '../types';
 import { apiFetch } from '../lib/api';
+import { GLOSSARY_CATEGORY_KEYS, getGlossaryCategoryLabel } from '../lib/glossary';
 
-const GLOSSARY_CATEGORY_LABELS: Record<string, string> = {
-  'Product & Brand': '产品与品牌名',
-  'Code & Acronym': '代号与专业缩写',
-  'Industry Domain': '行业垂直术语',
-  'Company Internal': '企业内部/自定义',
-  'Other': '其它',
-};
-
-const GLOSSARY_CATEGORY_OPTIONS = [
-  'Product & Brand',
-  'Code & Acronym',
-  'Industry Domain',
-  'Company Internal',
-  'Other',
-];
+const GLOSSARY_CATEGORY_OPTIONS: string[] = [...GLOSSARY_CATEGORY_KEYS];
 
 const GLOSSARY_SCOPE_OPTIONS: Array<{ value: GlossaryLibrary['scope']; label: string }> = [
   { value: 'general', label: '通用' },
@@ -39,8 +26,7 @@ const GLOSSARY_LANGUAGE_OPTIONS = [
 ];
 
 function getCategoryLabel(category?: string): string {
-  if (!category) return GLOSSARY_CATEGORY_LABELS.Other;
-  return GLOSSARY_CATEGORY_LABELS[category] || category;
+  return getGlossaryCategoryLabel(category);
 }
 
 function compareGlossaryText(a = '', b = ''): number {

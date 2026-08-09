@@ -48,7 +48,7 @@ export function getTranslationConcurrency(value = process.env.TRANSLATION_CONCUR
   return Math.min(MAX_TRANSLATION_CONCURRENCY, Math.max(MIN_TRANSLATION_CONCURRENCY, parsed));
 }
 
-class ModelApiError extends Error {
+export class ModelApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
@@ -76,6 +76,11 @@ function cleanJsonResponse(str: string): string {
   }
   return cleaned.trim();
 }
+
+// Hard cap per model API round-trip so a hung provider cannot stall a
+// translation run forever. Timed-out requests surface as ModelApiError and
+// are therefore picked up by withExponentialRetry.
+const MODEL_API_TIMEOUT_MS = 120_000;
 
 async function callModelApi(
   messages: ModelMessage[],
@@ -106,6 +111,15 @@ async function callModelApi(
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify(requestPayload),
+    signal: AbortSignal.timeout(MODEL_API_TIMEOUT_MS),
+  }).catch(err => {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new ModelApiError(
+        `${providerName} request timed out after ${MODEL_API_TIMEOUT_MS / 1000}s`,
+        408
+      );
+    }
+    throw err;
   });
 
   let response = await request(payload);

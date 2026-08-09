@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Search, Edit3, CheckCircle2, AlertTriangle, ShieldCheck, Check, X, Filter, Loader2, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { DocumentType, ExtractedTextItem, GlossaryTerm, ProjectSummary, TranslationProgress } from '../types';
+import { isGlossaryTermMatch } from '../lib/glossary';
 
 interface ReviewTableProps {
   projectId?: string;
@@ -34,19 +35,6 @@ export function isLiteralSearchMatch(text: string | null | undefined, search: st
   const normalizedSearch = search.trim().toLocaleLowerCase();
   if (!normalizedSearch) return true;
   return String(text || '').toLocaleLowerCase().includes(normalizedSearch);
-}
-
-// Precise word boundary mapping to avoid overly broad matching in incremental segments
-export function isGlossaryTermMatch(text: string | null | undefined, term: string | null | undefined): boolean {
-  if (!text || !term) return false;
-  const escapedTerm = term.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-  const isCjk = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]/.test(term);
-  if (isCjk) {
-    return text.toLowerCase().includes(term.toLowerCase());
-  } else {
-    const regex = new RegExp(`\\b${escapedTerm}\\b`, 'i');
-    return regex.test(text);
-  }
 }
 
 function displayLanguageLabel(language: string | null | undefined): string {

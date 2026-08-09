@@ -36,9 +36,37 @@ const DGM_NS = 'http://schemas.openxmlformats.org/drawingml/2006/diagram';
 const XML_NS = 'http://www.w3.org/XML/1998/namespace';
 const CODEISH_RE = /^([A-Z0-9_/.-]{2,}|[A-Z]{1,4}\d{1,4}[A-Z]?|\/[A-Z][A-Za-z0-9_/.-]+)$/;
 const LAYOUT_SPACE_RE = / {6,}/g;
-const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+const EAST_ASIAN_TEXT_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
 const PAGE_FIELD_LABEL_RE = /^(p|page|age|of)$/i;
 const PLACEHOLDER_RE = /^\s*(Title Text Appears Here|标题文本显示在此处)\s*$/i;
+
+// Layout profile per CJK target language. Chinese localizes PAGE field labels
+// ("第 X 页，共 Y 页"); Japanese/Korean keep the original labels because their
+// conventional page-number rendering differs and guessing a label risks mojibake-like
+// output. Fonts and lang tags follow the default CJK font of each locale.
+interface CjkLayout {
+  eastAsiaFont: string;
+  eastAsiaLang: string;
+  pageLabels: { prefix: string; between: string; suffix: string } | null;
+}
+
+function resolveCjkLayout(targetLanguage?: string): CjkLayout | null {
+  const language = String(targetLanguage || '').trim().toLowerCase();
+  if (language.startsWith('zh') || language.includes('chinese')) {
+    return {
+      eastAsiaFont: '微软雅黑',
+      eastAsiaLang: 'zh-CN',
+      pageLabels: { prefix: '第 ', between: ' 页，共 ', suffix: ' 页' }
+    };
+  }
+  if (language.startsWith('ja') || language.includes('japanese')) {
+    return { eastAsiaFont: '游ゴシック', eastAsiaLang: 'ja-JP', pageLabels: null };
+  }
+  if (language.startsWith('ko') || language.includes('korean')) {
+    return { eastAsiaFont: '맑은 고딕', eastAsiaLang: 'ko-KR', pageLabels: null };
+  }
+  return null;
+}
 
 function isDocxTextPart(path: string): boolean {
   return DOCX_TEXT_PARTS.some(pattern => pattern.test(path))
@@ -367,15 +395,15 @@ function getDuplicatedTextNodeGroups(textNodes: any[]): any[][] | null {
   return sameRunShape ? [firstGroup, secondGroup] : null;
 }
 
-function ensureEastAsianFontForTextNode(textNode: any, text: string): void {
-  if (!CJK_RE.test(text) || !isWordElement(textNode, 't')) return;
+function ensureEastAsianFontForTextNode(textNode: any, text: string, layout: CjkLayout): void {
+  if (!EAST_ASIAN_TEXT_RE.test(text) || !isWordElement(textNode, 't')) return;
 
   const run = getAncestorWordElement(textNode, 'r');
   if (!run) return;
 
   const rPr = getOrCreateWordChild(run, 'rPr');
   const rFonts = getOrCreateWordChild(rPr, 'rFonts');
-  setWordAttr(rFonts, 'eastAsia', '微软雅黑');
+  setWordAttr(rFonts, 'eastAsia', layout.eastAsiaFont);
 }
 
 function setTextNodeContent(node: any, text: string): void {
@@ -574,35 +602,35 @@ function capTranslatedTableWidth(table: any, textWidth: number | null): void {
   }
 }
 
-function localizePageFieldLabels(paragraph: any): void {
+function localizePageFieldLabels(paragraph: any, labels: NonNullable<CjkLayout['pageLabels']>): void {
   const fieldInstructions = getFieldInstructionText(paragraph);
   if (!/\bPAGE\b/i.test(fieldInstructions)) return;
 
   getNonFieldResultTextNodes(paragraph).forEach(node => {
     const normalized = normalizeText(node.textContent || '').toLowerCase();
     if (normalized === 'p' || normalized === 'page') {
-      node.textContent = '第 ';
+      node.textContent = labels.prefix;
     } else if (normalized === 'age') {
       node.textContent = '';
     } else if (normalized === 'of') {
-      node.textContent = ' 页，共 ';
+      node.textContent = labels.between;
     }
   });
 
-  if (/\bNUMPAGES\b/i.test(fieldInstructions) && !paragraphTextFromNodes(getTextNodesUnder(paragraph)).trim().endsWith('页')) {
+  if (/\bNUMPAGES\b/i.test(fieldInstructions) && !paragraphTextFromNodes(getTextNodesUnder(paragraph)).trim().endsWith(labels.suffix.trim())) {
     const doc = paragraph.ownerDocument || paragraph;
     const run = doc.createElementNS(W_NS, 'w:r');
     const text = doc.createElementNS(W_NS, 'w:t');
-    text.textContent = ' 页';
+    text.textContent = labels.suffix;
     run.appendChild(text);
     paragraph.appendChild(run);
   }
 }
 
-function prepareTranslatedParagraphLayout(paragraph: any, textNodes: any[], translatedText: string, textWidth: number | null): void {
-  if (!CJK_RE.test(translatedText)) return;
+function prepareTranslatedParagraphLayout(paragraph: any, textNodes: any[], translatedText: string, textWidth: number | null, layout: CjkLayout): void {
+  if (!EAST_ASIAN_TEXT_RE.test(translatedText)) return;
 
-  localizePageFieldLabels(paragraph);
+  if (layout.pageLabels) localizePageFieldLabels(paragraph, layout.pageLabels);
 
   const pPr = getOrCreateWordChild(paragraph, 'pPr');
   const wordWrap = getOrCreateWordChild(pPr, 'wordWrap');
@@ -613,7 +641,8 @@ function prepareTranslatedParagraphLayout(paragraph: any, textNodes: any[], tran
     if (!run) return;
     const rPr = getOrCreateWordChild(run, 'rPr');
     const lang = getOrCreateWordChild(rPr, 'lang');
-    setWordAttr(lang, 'eastAsia', 'zh-CN');
+    setWordAttr(lang, 'eastAsia', layout.eastAsiaLang);
+    ensureEastAsianFontForTextNode(textNode, translatedText, layout);
   });
 
   const cell = getAncestorWordElement(paragraph, 'tc');
@@ -936,9 +965,11 @@ export async function extractDOCXText(buffer: Buffer): Promise<DOCXStats> {
 
 export async function writeDOCXTranslations(
   originalBuffer: Buffer,
-  translationsByPart: Record<string, Record<number, string>>
+  translationsByPart: Record<string, Record<number, string>>,
+  targetLanguage?: string
 ): Promise<Buffer> {
   const zip = await JSZip.loadAsync(originalBuffer);
+  const cjkLayout = resolveCjkLayout(targetLanguage);
 
   for (const [partPath, partTranslations] of Object.entries(translationsByPart)) {
     const file = zip.file(partPath);
@@ -983,6 +1014,7 @@ export async function writeDOCXTranslations(
     }
 
     const paragraphNodes = collectParagraphs(doc);
+    const textWidth = cjkLayout ? getDocumentTextWidth(doc) : null;
     paragraphNodes.forEach((paragraph, currentIdx) => {
       const translatedText = partTranslations[currentIdx];
       if (translatedText === undefined) return;
@@ -990,10 +1022,16 @@ export async function writeDOCXTranslations(
       if (textNodes.length === 0) return;
 
       changed = true;
-      if (isInsideWordElement(paragraph, 'txbxContent')) {
+      const inTextbox = isInsideWordElement(paragraph, 'txbxContent');
+      if (inTextbox) {
         applyTextToTextboxNodes(textNodes, translatedText);
       } else {
         applyTextToNodes(textNodes, translatedText);
+      }
+      // CJK layout fixes (font/lang tags, word wrap, table width cap, page-field
+      // labels) apply to body paragraphs only; text boxes manage their own layout.
+      if (cjkLayout && !inTextbox) {
+        prepareTranslatedParagraphLayout(paragraph, selectVisibleTextNodes(paragraph), translatedText, textWidth, cjkLayout);
       }
     });
 

@@ -76,6 +76,7 @@ Server fully operational on http://localhost:8080
 | `AI_MODEL` | 是¹ | `deepseek-chat` | 服务商提供的模型 ID |
 | `AI_API_PROVIDER` | 否 | 自动识别 | 显示在页面上的服务商名称 |
 | `TRANSLATION_CONCURRENCY` | 否 | `6` | 同时处理的请求批次，限制为 1–12 |
+| `MAX_UPLOAD_SIZE_MB` | 否 | 不限制 | 可选的本地文件大小保护上限；留空或设为非正数表示不限制 |
 | `HOST` | 否 | `127.0.0.1` | 服务监听地址；本地使用请保持默认 |
 | `PORT` | 否 | `8080` | 本地端口 |
 | `DATA_DIR` | 否 | `./data` | 项目、术语库和翻译记忆目录 |

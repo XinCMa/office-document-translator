@@ -60,7 +60,7 @@ function removeAttr(attrs: string, name: string): string {
   return attrs.replace(new RegExp(`\\s*${name}="[^"]*"`, 'g'), '');
 }
 
-function collectSharedStrings(xml: string): string[] {
+export function collectXLSXSharedStrings(xml: string): string[] {
   const sharedStrings: string[] = [];
   xml.replace(/<si\b[^>]*>([\s\S]*?)<\/si>/g, (siMatch, siInner) => {
     const parts: string[] = [];
@@ -117,7 +117,7 @@ export async function extractXLSXText(buffer: Buffer): Promise<XLSXStats> {
   }
 
   const sharedStringsXml = await zip.file('xl/sharedStrings.xml')?.async('string');
-  const sharedStrings = sharedStringsXml ? collectSharedStrings(sharedStringsXml) : [];
+  const sharedStrings = sharedStringsXml ? collectXLSXSharedStrings(sharedStringsXml) : [];
   const sheetRegex = /^xl\/worksheets\/sheet(\d+)\.xml$/;
   const sheetFiles = Object.keys(zip.files).filter(name => sheetRegex.test(name)).sort((a, b) => {
     const aNum = Number.parseInt(a.match(sheetRegex)?.[1] || '0', 10);
@@ -232,7 +232,7 @@ export async function writeXLSXTranslations(
 ): Promise<Buffer> {
   const zip = await JSZip.loadAsync(originalBuffer);
   const sharedStringsXml = await zip.file('xl/sharedStrings.xml')?.async('string');
-  const sharedStrings = sharedStringsXml ? collectSharedStrings(sharedStringsXml) : [];
+  const sharedStrings = sharedStringsXml ? collectXLSXSharedStrings(sharedStringsXml) : [];
 
   const sheetRegex = /^xl\/worksheets\/sheet\d+\.xml$/;
   const sheetFiles = Object.keys(zip.files).filter(name => sheetRegex.test(name));

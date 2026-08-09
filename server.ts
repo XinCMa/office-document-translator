@@ -9,14 +9,32 @@ import { db, Project, ExtractedTextItem, GlossaryTerm, GlossaryLibrary, QAStatus
 import { extractPPTXText, writePPTXTranslations, PPTXStats } from './server/pptx.js';
 import { extractDOCXText, writeDOCXTranslations, collectDOCXParagraphTextsFromXml, isDocxTextPart, hasDOCXFixedLayoutFlyerRisk, DOCXStats } from './server/docx.js';
 import { extractPDFText, writePDFTranslations, PDFStats } from './server/pdf.js';
-import { extractXLSXText, writeXLSXTranslations, collectXLSXCellTextsFromXml, XLSXStats } from './server/xlsx.js';
-import { getModelApiConfig, translateStrings, translateSegments, runPreDetection, resolveGlossaryConflicts, type TranslationContextMap, type TranslationSegmentRequest } from './server/translator.js';
+import { extractXLSXText, writeXLSXTranslations, collectXLSXCellTextsFromXml, collectXLSXSharedStrings, XLSXStats } from './server/xlsx.js';
+import { getModelApiConfig, translateStrings, translateSegments, runPreDetection, resolveGlossaryConflicts, ModelApiError, type TranslationContextMap, type TranslationSegmentRequest } from './server/translator.js';
 import { buildGlossaryImportPreview, linkGlobalGlossaryToProject, mergeGlossaryTerms, mergeProjectGlossaryTerms, parseGlossaryFile, validateGlossaryUsage, buildSegmentTermHints, validateSegmentTermHints, orientGlossaryForLanguagePair, type GlossaryConflictDecisionMap } from './server/glossary.js';
 import type { ProjectGlossaryReviewCandidate } from './server/glossary.js';
 import { createServer as createViteServer } from 'vite';
 import { detectSourceLanguageFromTexts, getLanguageEvidence, hasLikelyResidualLanguage, normalizeLanguage, type SupportedLanguage } from './server/language-detection.js';
 import { resolveUploadedFileName, sanitizeOriginalFileName } from './server/file-name.js';
-const upload = multer({ dest: 'uploads/', defParamCharset: 'utf8' });
+const configuredMaxUploadSizeMb = Number(process.env.MAX_UPLOAD_SIZE_MB);
+const MAX_UPLOAD_SIZE_MB = Number.isFinite(configuredMaxUploadSizeMb) && configuredMaxUploadSizeMb > 0
+    ? configuredMaxUploadSizeMb
+    : null;
+const upload = multer({ dest: 'uploads/', defParamCharset: 'utf8',
+    ...(MAX_UPLOAD_SIZE_MB ? { limits: { fileSize: MAX_UPLOAD_SIZE_MB * 1024 * 1024 } } : {}) });
+// Central 500 responder: log the full error server-side, but only surface
+// messages that are actionable for the user (model API failures). Everything
+// else is replaced with a generic message so internal details like filesystem
+// paths never reach the client.
+function sendServerError(res: express.Response, err: unknown): void {
+    console.error('[api] request failed:', err);
+    if (err instanceof ModelApiError) {
+        const status = err.status >= 400 && err.status <= 599 ? err.status : 500;
+        res.status(status).json({ error: err.message });
+        return;
+    }
+    res.status(500).json({ error: 'Internal server error. Check the server console for details.' });
+}
 async function startServer() {
     const PROJECT_GLOSSARY_LANGUAGE_VERSION = 3;
     const app = express();
@@ -1095,7 +1113,7 @@ async function startServer() {
             res.json(summaries);
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Get single project details (including texts)
@@ -1112,7 +1130,7 @@ async function startServer() {
             res.json(recoverProjectBackgroundJobs(project));
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Upload Office file
@@ -1246,7 +1264,7 @@ async function startServer() {
         }
         catch (err: any) {
             console.error(err);
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Initialize Demo presentation project
@@ -1329,7 +1347,7 @@ async function startServer() {
             });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // Safe Index creator
@@ -1427,7 +1445,7 @@ async function startServer() {
             res.json(project);
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // Select multiple reusable glossary libraries for a project. The selected
@@ -1474,7 +1492,7 @@ async function startServer() {
                 })) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // Save project-scoped conflict decisions. These decisions affect only this
@@ -1518,7 +1536,7 @@ async function startServer() {
             res.json({ success: true, glossaryConflictDecisions: nextDecisions, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/glossary/import-preview', upload.single('file'), async (req, res) => {
@@ -1542,7 +1560,7 @@ async function startServer() {
         catch (err: any) {
             if (req.file?.path && fs.existsSync(req.file.path))
                 fs.unlinkSync(req.file.path);
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/glossary/import-apply', (req, res) => {
@@ -1567,7 +1585,7 @@ async function startServer() {
             res.json({ success: true, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/glossary/validate', (req, res) => {
@@ -1594,7 +1612,7 @@ async function startServer() {
             res.json({ success: true, report, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/rescan-text', async (req, res) => {
@@ -1660,7 +1678,7 @@ async function startServer() {
             res.json({ success: true, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.patch('/api/projects/:id/language', async (req, res) => {
@@ -1708,7 +1726,7 @@ async function startServer() {
             res.json(project);
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/projects/:id/translation/pause', (req, res) => {
@@ -1751,7 +1769,7 @@ async function startServer() {
             return res.status(409).json({ error: 'This project is not currently translating.' });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Request translation
@@ -1941,7 +1959,7 @@ async function startServer() {
                 failedProject.errorMsg = err.message;
                 db.saveProject(failedProject);
             }
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // Precise word boundary mapping helper for glossary matching
@@ -2141,7 +2159,7 @@ async function startServer() {
                 finalizeTranslationStatus(failedProject);
                 db.saveProject(failedProject);
             }
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Update translations manually
@@ -2199,7 +2217,7 @@ async function startServer() {
             res.json({ success: true, project });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Build / Generate PPTX
@@ -2285,7 +2303,7 @@ async function startServer() {
                     }
                     translationsByPart[partPath][p_idx] = item.translatedText || item.originalText;
                 }
-                outputBuffer = await writeDOCXTranslations(buffer, translationsByPart);
+                outputBuffer = await writeDOCXTranslations(buffer, translationsByPart, project.targetLang);
             }
             else {
                 // Reconstruct translation payload grouped by slide number and paragraph index
@@ -2437,6 +2455,11 @@ async function startServer() {
                     return out;
                 };
                 const reportedResiduals = new Set<string>();
+                // XLSX cells of type "s" only store an index into xl/sharedStrings.xml,
+                // so resolve that table once or the residual scan would see empty cells.
+                const xlsxSharedStrings = documentType === 'xlsx'
+                    ? collectXLSXSharedStrings(await checkZip.file('xl/sharedStrings.xml')?.async('string') || '')
+                    : [];
                 const xmlParts = Object.keys(checkZip.files).filter(name => documentType === 'docx'
                     ? isDocxTextPart(name)
                     : documentType === 'xlsx'
@@ -2450,7 +2473,7 @@ async function startServer() {
                     const paragraphTexts = documentType === 'docx'
                         ? collectDOCXParagraphTextsFromXml(xml)
                         : documentType === 'xlsx'
-                            ? collectXLSXCellTextsFromXml(xml)
+                            ? collectXLSXCellTextsFromXml(xml, xlsxSharedStrings)
                             : collectParagraphTexts(xml);
                     for (const text of paragraphTexts) {
                         const residualThreshold = isProjectTargetEnglish(project) ? 6 : 18;
@@ -2503,7 +2526,7 @@ async function startServer() {
                 failedProject.errorMsg = err.message;
                 db.saveProject(failedProject);
             }
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Download finished translated package
@@ -2525,7 +2548,7 @@ async function startServer() {
             res.download(project.translatedFilePath, downloadName);
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Delete project
@@ -2543,7 +2566,7 @@ async function startServer() {
             res.json({ success: true });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Glossary Management
@@ -2553,7 +2576,7 @@ async function startServer() {
             res.json(getPersonalGlossary(clientId));
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.get('/api/glossary/libraries', (req, res) => {
@@ -2562,7 +2585,7 @@ async function startServer() {
             res.json({ libraries: db.getGlossaryLibraries(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/glossary/libraries', (req, res) => {
@@ -2587,7 +2610,7 @@ async function startServer() {
             res.status(201).json({ success: true, library });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.patch('/api/glossary/libraries/:id', (req, res) => {
@@ -2610,7 +2633,7 @@ async function startServer() {
             res.json({ success: true, library: saved });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.delete('/api/glossary/libraries/:id', (req, res) => {
@@ -2622,7 +2645,7 @@ async function startServer() {
             res.json({ success: true, libraries: db.getGlossaryLibraries(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/glossary', (req, res) => {
@@ -2648,7 +2671,7 @@ async function startServer() {
             res.json({ success: true, glossary: getPersonalGlossary(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/glossary/import-preview', upload.single('file'), async (req, res) => {
@@ -2664,7 +2687,7 @@ async function startServer() {
         catch (err: any) {
             if (req.file?.path && fs.existsSync(req.file.path))
                 fs.unlinkSync(req.file.path);
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/glossary/import-apply', (req, res) => {
@@ -2679,7 +2702,7 @@ async function startServer() {
             res.json({ success: true, glossary: getPersonalGlossary(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.patch('/api/glossary/:source', (req, res) => {
@@ -2719,7 +2742,7 @@ async function startServer() {
             res.json({ success: true, glossary: getPersonalGlossary(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.delete('/api/glossary/:source', (req, res) => {
@@ -2730,7 +2753,7 @@ async function startServer() {
             res.json({ success: true, glossary: getPersonalGlossary(clientId) });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Translation Memory management
@@ -2740,7 +2763,7 @@ async function startServer() {
             res.json(db.getTranslationMemory(clientId));
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     app.post('/api/tm/clear', (req, res) => {
@@ -2750,7 +2773,7 @@ async function startServer() {
             res.json({ success: true });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: One-click Full System Reset (per current user)
@@ -2761,7 +2784,7 @@ async function startServer() {
             res.json({ success: true, message: 'Your projects, glossary, and translation memory were reset.' });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
     });
     // API: Get Current Engine Deployment Config
@@ -2776,8 +2799,19 @@ async function startServer() {
             });
         }
         catch (err: any) {
-            res.status(500).json({ error: err.message });
+            sendServerError(res, err);
         }
+    });
+    // Reject oversized/failed uploads with a clean JSON error instead of letting
+    // Express fall through to its default (HTML) error handling.
+    app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({ error: 'File exceeds the configured local upload size limit.' });
+            }
+            return res.status(400).json({ error: 'Upload failed. Please try again.' });
+        }
+        next(err);
     });
     // Vite Server Middleware Routing Setup
     if (process.env.NODE_ENV !== 'production') {

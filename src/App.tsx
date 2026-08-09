@@ -7,29 +7,7 @@ import ReviewTable from './components/ReviewTable';
 import GlossaryManager from './components/GlossaryManager';
 import QAView from './components/QAView';
 import { apiFetch } from './lib/api';
-// Precise word boundary mapping to avoid overly broad matching in incremental segments
-export function isGlossaryTermMatch(text: string | null | undefined, term: string | null | undefined): boolean {
-    if (!text || !term)
-        return false;
-    const escapeRegExp = (value: string) => value.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-    const isCjk = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]/.test(term);
-    if (isCjk) {
-        return text.toLowerCase().includes(term.toLowerCase());
-    }
-    const compactTerm = term.trim();
-    if (!compactTerm)
-        return false;
-    const words = compactTerm.split(/\s+/);
-    const lastWord = words[words.length - 1];
-    const prefix = words.slice(0, -1).map(escapeRegExp).join('\\s+');
-    const suffixPattern = /^[a-z]+$/i.test(lastWord) && lastWord.length >= 4
-        ? (lastWord.toLowerCase().endsWith('e')
-            ? `${escapeRegExp(lastWord.slice(0, -1))}(?:e|es|ed|ing|ion|ions|ive|ives|er|ers)?`
-            : `${escapeRegExp(lastWord)}(?:s|es|ed|ing|ion|ions|ive|ives|er|ers)?`)
-        : escapeRegExp(lastWord);
-    const pattern = words.length > 1 ? `${prefix}\\s+${suffixPattern}` : suffixPattern;
-    return new RegExp(`\\b${pattern}\\b`, 'i').test(text);
-}
+import { isGlossaryTermMatch } from './lib/glossary';
 const normalizeGlossaryValue = (value: unknown): string => String(value || '').trim();
 const languagePairForDirection = (direction: TranslationDirection) => direction === 'zh-en'
     ? { sourceLang: 'Simplified Chinese', targetLang: 'English' }
