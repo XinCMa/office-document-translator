@@ -128,6 +128,7 @@ export default function App() {
     }, [activeProjectSummary?.id, activeProjectSummary?.targetLang]);
     const openPersonalGlossary = () => {
         setShowGlobalGlossary(true);
+        void loadGlossary();
     };
     const closePersonalGlossary = () => {
         setShowGlobalGlossary(false);
@@ -326,6 +327,12 @@ export default function App() {
         catch (err) {
             console.error('Failed to load glossary:', err);
         }
+    };
+    const syncDefaultGlossaryState = (nextGlossary: GlossaryTerm[]) => {
+        setGlossary(nextGlossary);
+        setGlossaryLibraries(previous => previous.map(library => library.id.startsWith('default_')
+            ? { ...library, terms: nextGlossary }
+            : library));
     };
     const handleGlossaryLibrariesChanged = (libraries: GlossaryLibrary[]) => {
         setGlossaryLibraries(libraries);
@@ -877,7 +884,7 @@ export default function App() {
                 throw new Error(errorData.error || 'Failed to submit term.');
             }
             const data = await res.json();
-            setGlossary(data.glossary);
+            syncDefaultGlossaryState(data.glossary);
         }
         catch (err: any) {
             setErrorMessage(err.message || 'Failed to add term to global list.');
@@ -909,7 +916,7 @@ export default function App() {
             latestGlossary = data.glossary;
         }
         if (latestGlossary) {
-            setGlossary(latestGlossary);
+            syncDefaultGlossaryState(latestGlossary);
         }
     };
     const glossaryDialogKey = (term: GlossaryTerm): string => `${term.source.trim().toLowerCase()}|||${term.target.trim().toLowerCase()}`;
@@ -978,7 +985,7 @@ export default function App() {
             throw new Error(errorData.error || 'Failed to update glossary term.');
         }
         const data = await res.json();
-        setGlossary(data.glossary);
+        syncDefaultGlossaryState(data.glossary);
     };
     const handleDeleteGlossaryTerm = async (source: string, target?: string) => {
         try {
@@ -988,7 +995,7 @@ export default function App() {
             });
             if (res.ok) {
                 const data = await res.json();
-                setGlossary(data.glossary);
+                syncDefaultGlossaryState(data.glossary);
             }
         }
         catch (err) {
@@ -1257,7 +1264,7 @@ export default function App() {
               <Languages className="w-5 h-5 animate-pulse"/>
             </div>
           <div className="ml-2">
-              <span className="text-sm font-bold tracking-tight text-foreground">AI 文档本地化工作台</span>
+              <span className="text-sm font-bold tracking-tight text-foreground">AI Office 文档本地化工作台</span>
               {systemConfig?.hasApiKey ? (<span className="text-[10px] font-sans font-bold px-2.5 py-0.5 rounded-full ml-3 border transition-all bg-blue-50 text-blue-700 border-blue-150" title={`${systemConfig.activeEngine} · ${systemConfig.model}`}>
                   {systemConfig.activeEngine} 已就绪
                 </span>) : systemConfig ? (<span className="text-[10px] font-sans font-bold px-2.5 py-0.5 rounded-full ml-3 border border-amber-200 bg-amber-50 text-amber-700">
@@ -1434,7 +1441,7 @@ export default function App() {
                     <ChevronLeft className="h-5 w-5"/>
                   </button>
                 </div>
-                <GlossaryManager glossary={glossary} libraries={glossaryLibraries} onAddTerm={handleAddGlossaryTerm} onUpdateTerm={handleUpdateGlossaryTerm} onDeleteTerm={handleDeleteGlossaryTerm} onGlossaryImported={setGlossary} onLibrariesChanged={handleGlossaryLibrariesChanged} isAdding={isAddingGlossary}/>
+                <GlossaryManager glossary={glossary} libraries={glossaryLibraries} onAddTerm={handleAddGlossaryTerm} onUpdateTerm={handleUpdateGlossaryTerm} onDeleteTerm={handleDeleteGlossaryTerm} onGlossaryImported={syncDefaultGlossaryState} onLibrariesChanged={handleGlossaryLibrariesChanged} isAdding={isAddingGlossary}/>
               </div>)}
 
             {/* Step 1 & Step 2 rendered inside UploadView */}

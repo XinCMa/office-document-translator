@@ -1,6 +1,6 @@
-# Office Document Translator
+# AI Office 文档本地化工作台
 
-本地运行的 AI Office 文档翻译工作台：导入 Office 文件，完成上下文翻译、术语治理、人工审校，并生成尽量保留原格式的译文文件。
+本地运行的 AI Office 文档本地化工作台：导入 Office 文件，完成上下文翻译、术语治理、人工审校，并生成尽量保留原格式的译文文件。
 
 **第一次翻得准，长期用得稳。** 目前支持 PPTX、DOCX、XLSX，以及中文、英语、法语、日语、意大利语和阿拉伯语等翻译方向。
 
@@ -11,7 +11,7 @@
 把下面整段复制给 Codex、Claude Code、Cursor 等可以操作终端的编程 Agent：
 
 ```text
-请在我的电脑上安装并验证 Office Document Translator：
+请在我的电脑上安装并验证 AI Office 文档本地化工作台：
 https://github.com/XinCMa/office-document-translator
 
 要求：
